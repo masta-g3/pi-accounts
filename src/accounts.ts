@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 export const NATIVE = "openai-codex";
-export type Account = { slot: number; provider: string; label: string; accountId?: string };
+export type Account = { kind: "codex" | "claude"; slot: number; provider: string; label: string; accountId?: string };
 type RecordValue = Record<string, unknown>;
 export type QuotaWindow = { label: "5h" | "week"; remaining: number; reset: number };
 export type Usage = { tier?: string; windows: QuotaWindow[] };
@@ -49,7 +49,7 @@ export function accountsFromAuth(value: unknown): Account[] {
     if (!slot || !record(credential) || credential.type !== "oauth" || typeof credential.access !== "string" || typeof credential.refresh !== "string" || typeof credential.expires !== "number") return [];
     const identity = tokenIdentity(credential.access);
     return [{
-      slot, provider, label: identity.email ?? `Account ${slot}`,
+      kind: "codex" as const, slot, provider, label: identity.email ?? `Account ${slot}`,
       accountId: typeof credential.accountId === "string" ? credential.accountId : identity.accountId,
     }];
   }).sort((a, b) => a.slot - b.slot);
@@ -67,9 +67,23 @@ export function readAccounts(path: string): Account[] {
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error("Pi auth.json contains invalid JSON. Repair it before using /codex.");
+    throw new Error("Pi auth.json contains invalid JSON. Repair it before using /accounts.");
   }
   return accountsFromAuth(value);
+}
+
+export function parseClaudeUsage(value: unknown): Usage {
+  if (!record(value)) throw new Error("Quota unavailable: unrecognized response.");
+  const windows: QuotaWindow[] = [];
+  for (const [key, label] of [["five_hour", "5h"], ["seven_day", "week"]] as const) {
+    const entry = value[key];
+    if (!record(entry) || typeof entry.utilization !== "number" || !Number.isFinite(entry.utilization)
+      || entry.utilization < 0 || entry.utilization > 100 || typeof entry.resets_at !== "string") continue;
+    const reset = Date.parse(entry.resets_at);
+    if (Number.isFinite(reset)) windows.push({ label, remaining: 100 - entry.utilization, reset });
+  }
+  if (!windows.length) throw new Error("No supported quota windows returned.");
+  return { windows };
 }
 
 export function parseUsage(value: unknown, now = Date.now()): Usage {
@@ -91,13 +105,43 @@ function duration(ms: number): string {
   const minutes = Math.max(1, Math.ceil(ms / 60000));
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  if (hours < 24) return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
+}
+
+function resetAt(reset: number, now: number): string {
+  const date = new Date(reset);
+  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  return date.toDateString() === new Date(now).toDateString() ? time
+    : `${date.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
+}
+
+/** Picker detail: plan tier, then one line per window with its local reset time. */
+export function usageDetails(usage: Usage, now = Date.now()): string[] {
+  return [...(usage.tier ? [usage.tier] : []), ...usage.windows.map(w => w.reset <= now ? `${w.label} reset · reopen to refresh`
+    : `${w.label} ${w.remaining === 0 ? "blocked" : `${Number(w.remaining.toFixed(1))}% left`} · resets ${resetAt(w.reset, now)} (in ${duration(w.reset - now)})`)];
 }
 
 export function usageText(usage: Usage, now = Date.now()): string {
   return usage.windows.map(w => w.reset <= now ? `${w.label} reset · reopen to refresh`
     : w.remaining === 0 ? `${w.label} blocked · resets in ${duration(w.reset - now)}`
     : `${w.label} ${Number(w.remaining.toFixed(1))}% left`).join(" · ");
+}
+
+export function lastModel<T extends { id: string; provider: string }>(
+  branch: readonly unknown[], provider: string, available: T[], scope: readonly { model: { id: string; provider: string } }[],
+): T | undefined {
+  const allowed = (model: T) => !scope.length || scope.some(item => item.model.provider === model.provider && item.model.id === model.id);
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index] as { type?: string; provider?: string; modelId?: string; message?: { role?: string; provider?: string; model?: string } };
+    const modelId = entry.type === "model_change" && entry.provider === provider ? entry.modelId
+      : entry.type === "message" && entry.message?.role === "assistant" && entry.message.provider === provider ? entry.message.model : undefined;
+    if (modelId) {
+      const model = available.find(item => item.provider === provider && item.id === modelId);
+      return model && allowed(model) ? model : undefined;
+    }
+  }
+  return undefined;
 }
 
 export function switchTarget<T extends { id: string; provider: string }>(

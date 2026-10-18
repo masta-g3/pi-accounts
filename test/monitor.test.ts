@@ -4,7 +4,7 @@ import { UsageMonitor } from "../src/monitor.ts";
 import { REFRESH_MS } from "../src/status.ts";
 import type { Account, Usage } from "../src/accounts.ts";
 
-const account: Account = { slot: 1, provider: "openai-codex", label: "Personal", accountId: "a" };
+const account: Account = { kind: "codex", slot: 1, provider: "openai-codex", label: "Personal", accountId: "a" };
 const usage = (now: number): Usage => ({ windows: [{ label: "5h", remaining: 80, reset: now + 3600000 }] });
 
 test("shares in-flight requests and refreshes only when due or explicitly requested", async () => {

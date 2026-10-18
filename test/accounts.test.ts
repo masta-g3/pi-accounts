@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+process.env.TZ = "UTC";
 import { test } from "node:test";
-import { accountsFromAuth, providerFor, slotFor, parseUsage, usageText, switchTarget } from "../src/accounts.ts";
+import { accountsFromAuth, lastModel, providerFor, slotFor, parseUsage, usageDetails, usageText, switchTarget } from "../src/accounts.ts";
 
 const jwt = (payload: object) => `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.x`;
 const credential = (email: string, accountId: string) => ({ type: "oauth", access: jwt({ email, "https://api.openai.com/auth": { chatgpt_account_id: accountId } }), refresh: "test", expires: 9999999999999 });
@@ -42,6 +43,20 @@ test("five-hour and weekly quotas stay separately labeled", () => {
   assert.equal(usageText(usage, now), "5h blocked · resets in 1h · week 64% left");
 });
 
+test("details give each window's local reset time and remaining duration", () => {
+  // now is Friday 08:00 UTC.
+  const usage = { tier: "pro", windows: [
+    { label: "5h" as const, remaining: 98, reset: now + (3 * 60 + 12) * 60000 },
+    { label: "week" as const, remaining: 0, reset: now + (5 * 24 + 2) * 3600000 },
+  ] };
+  assert.deepEqual(usageDetails(usage, now), [
+    "pro",
+    "5h 98% left · resets 11:12 (in 3h 12m)",
+    "week blocked · resets Wed 10:00 (in 5d 2h)",
+  ]);
+  assert.deepEqual(usageDetails({ windows: [usage.windows[0]] }, now + 4 * 3600000), ["5h reset · reopen to refresh"]);
+});
+
 test("supports accounts with only a five-hour quota without inventing a weekly value", () => {
   const usage = parseUsage({ rate_limit: { primary_window: window(18000, 25) } }, now);
   assert.equal(usageText(usage, now), "5h 75% left");
@@ -52,6 +67,17 @@ test("supports accounts with only a five-hour quota without inventing a weekly v
 test("expired snapshots are not presented as current quota", () => {
   const usage = parseUsage({ rate_limit: { primary_window: window(18000, 100) } }, now);
   assert.equal(usageText(usage, now + 3600_000), "5h reset · reopen to refresh");
+});
+
+test("last model uses the newest provider entry and rejects unavailable or out-of-scope history", () => {
+  const models = [{ provider: "claude-bridge", id: "sonnet" }, { provider: "claude-bridge", id: "opus" }];
+  const branch = [
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "sonnet" } },
+    { type: "model_change", provider: "claude-bridge", modelId: "opus" },
+  ];
+  assert.equal(lastModel(branch, "claude-bridge", models, [])?.id, "opus");
+  assert.equal(lastModel(branch, "claude-bridge", models, [{ model: models[0] }]), undefined);
+  assert.equal(lastModel([...branch, { type: "model_change", provider: "claude-bridge", modelId: "missing" }], "claude-bridge", models, []), undefined);
 });
 
 test("switch preserves the model, uses the registry, and obeys exact scope", () => {

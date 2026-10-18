@@ -1,8 +1,8 @@
 {
-  "name": "pi-codex-accounts",
+  "name": "pi-accounts",
   "version": "0.1.0",
   "private": true,
-  "description": "Codex account switching and remaining-quota bars for Pi",
+  "description": "Codex and Claude account switching and remaining-quota bars for Pi",
   "license": "MIT",
   "repository": {
     "type": "git",

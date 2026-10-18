@@ -1,29 +1,47 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createPicker, type PickerChoice } from "../src/picker.ts";
+import { createModelPicker, createPicker, type PickerChoice } from "../src/picker.ts";
 import { type Account, type Usage } from "../src/accounts.ts";
 
 const accounts: Account[] = [
-  { slot: 1, provider: "openai-codex", label: "personal@example.com" },
-  { slot: 2, provider: "openai-codex-account-2", label: "另一个很长的账户@example.com" },
+  { kind: "codex", slot: 1, provider: "openai-codex", label: "personal@example.com" },
+  { kind: "codex", slot: 2, provider: "openai-codex-account-2", label: "另一个很长的账户@example.com" },
 ];
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-test("d chooses a default independently of the active marker; add is not a default target", () => {
+test("account actions target only selected accounts, not add or model rows", () => {
   let selected: PickerChoice | undefined;
   const picker = createPicker(accounts, accounts[0].provider, theme, () => {}, value => { selected = value; },
     () => new Promise(() => {}), accounts[1].provider);
   assert.match(picker.render(120).join("\n"), /default · Checking quota/);
+  assert.match(picker.render(120).join("\n"), /l sign out/);
   picker.handleInput("d");
   assert.deepEqual(selected, { defaultProvider: accounts[0].provider });
   picker.dispose();
+
   selected = undefined;
-  const empty = createPicker([], undefined, theme, () => {}, value => { selected = value; }, () => new Promise(() => {}));
-  empty.handleInput("d");
+  const add = createPicker([], undefined, theme, () => {}, value => { selected = value; }, () => new Promise(() => {}));
+  assert.doesNotMatch(add.render(120).join("\n"), /sign out/);
+  add.handleInput("d");
+  add.handleInput("l");
   assert.equal(selected, undefined);
-  empty.dispose();
+  add.dispose();
+
+  const model = createModelPicker("claude-bridge", [{ id: "sonnet" }], false, theme, () => {}, value => { selected = value; });
+  assert.doesNotMatch(model.render(120).join("\n"), /sign out/);
+  model.handleInput("l");
+  assert.equal(selected, undefined);
+  model.dispose();
+});
+
+test("l signs out the highlighted account", () => {
+  let selected: PickerChoice | undefined;
+  const picker = createPicker(accounts, accounts[1].provider, theme, () => {}, value => { selected = value; }, () => new Promise(() => {}));
+  picker.handleInput("l");
+  assert.deepEqual(selected, { logoutProvider: accounts[1].provider });
+  picker.dispose();
 });
 
 test("picker opens before quota resolves and remains width-safe", async () => {
@@ -36,6 +54,8 @@ test("picker opens before quota resolves and remains width-safe", async () => {
   finish({ windows: [{ label: "week", remaining: 64, reset: Date.now() + 60000 }] });
   await tick();
   assert.match(picker.render(120).join("\n"), /week 64% left/);
+  picker.handleInput("\u001b[B");
+  assert.match(picker.render(120).join("\n"), /\nweek 64% left · resets (\w{3} )?\d\d:\d\d \(in 1m\)/);
   picker.dispose();
 });
 
@@ -65,6 +85,18 @@ test("late quota results cannot repaint a closed picker", async () => {
   resolve({ windows: [] });
   await tick();
   assert.equal(renders, 0);
+});
+
+test("model picker renders provider title and returns switch or default choices", () => {
+  let choice: PickerChoice | undefined;
+  const picker = createModelPicker("claude-bridge", [{ id: "sonnet" }], false, theme, () => {}, value => { choice = value; });
+  assert.match(picker.render(80).join("\n"), /Claude models/);
+  picker.handleInput("\r");
+  assert.deepEqual(choice, { provider: "claude-bridge", model: "sonnet" });
+  choice = undefined;
+  const defaults = createModelPicker("claude-bridge", [{ id: "opus" }], true, theme, () => {}, value => { choice = value; });
+  defaults.handleInput("\r");
+  assert.deepEqual(choice, { defaultProvider: "claude-bridge", model: "opus" });
 });
 
 test("quota failure keeps accounts selectable and gives an actionable detail", async () => {
