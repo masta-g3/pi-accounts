@@ -6,10 +6,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/masta-g3/pi-codex-accounts.git"
+    "url": "git+https://github.com/masta-g3/pi-accounts.git"
   },
-  "homepage": "https://github.com/masta-g3/pi-codex-accounts#readme",
-  "bugs": { "url": "https://github.com/masta-g3/pi-codex-accounts/issues" },
+  "homepage": "https://github.com/masta-g3/pi-accounts#readme",
+  "bugs": { "url": "https://github.com/masta-g3/pi-accounts/issues" },
   "files": ["src", "README.md", "LICENSE"],
   "type": "module",
   "keywords": ["pi-package"],

@@ -23,7 +23,7 @@ type HarnessOptions = {
 };
 
 function harness(t: TestContext, options: HarnessOptions = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "pi-codex-accounts-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-accounts-test-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
   t.after(() => {

@@ -1,6 +1,6 @@
 # Pi accounts
 
-[![CI](https://github.com/masta-g3/pi-codex-accounts/actions/workflows/ci.yml/badge.svg)](https://github.com/masta-g3/pi-codex-accounts/actions/workflows/ci.yml)
+[![CI](https://github.com/masta-g3/pi-accounts/actions/workflows/ci.yml/badge.svg)](https://github.com/masta-g3/pi-accounts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 See remaining Codex and Claude Code quota in Pi's footer. Use `/accounts` to switch accounts or choose a default for new sessions.
@@ -14,7 +14,7 @@ Switching is manual. There is no automatic routing or failover.
 ## Install
 
 ```sh
-pi install git:github.com/masta-g3/pi-codex-accounts
+pi install git:github.com/masta-g3/pi-accounts
 ```
 
 Install [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) separately to use Claude. Run `/reload` in an existing Pi session, or start a new session. Tested against Pi 1.3.0. Requires Node 22.19 or later.
@@ -76,8 +76,8 @@ Do not attach credentials, tokens, or unredacted account screenshots to bug repo
 ## Development
 
 ```sh
-git clone https://github.com/masta-g3/pi-codex-accounts.git
-cd pi-codex-accounts
+git clone https://github.com/masta-g3/pi-accounts.git
+cd pi-accounts
 npm ci
 npm run check
 npm test
