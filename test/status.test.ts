@@ -104,3 +104,10 @@ test("groups Codex and Claude and marks only the active provider", () => {
   assert.equal(quotaStatus([...accounts, claude], claude.provider, () => fresh(usage(80, 60)), theme, 120, now),
     "Codex 1 ▰▰▰▰▱ 42m ▰▰▰▱▱ 6d · 2 ▰▰▰▰▱ 42m ▰▰▰▱▱ 6d  │  Claude ●1 ▰▰▰▰▱ 42m ▰▰▰▱▱ 6d");
 });
+
+test("owned resets follow the account's bars and hide at zero", () => {
+  assert.equal(quotaStatus([accounts[0]], accounts[0].provider, () => fresh({ ...usage(80, 60), resets: 2 }), theme, 100, now),
+    "Codex ●1 ▰▰▰▰▱ 42m ▰▰▰▱▱ 6d ↻2");
+  assert.equal(quotaStatus([accounts[0]], accounts[0].provider, () => fresh({ ...usage(80, 60), resets: 0 }), theme, 100, now),
+    "Codex ●1 ▰▰▰▰▱ 42m ▰▰▰▱▱ 6d");
+});

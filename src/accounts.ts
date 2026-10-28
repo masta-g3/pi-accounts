@@ -4,7 +4,7 @@ export const NATIVE = "openai-codex";
 export type Account = { kind: "codex" | "claude"; slot: number; provider: string; label: string; accountId?: string };
 type RecordValue = Record<string, unknown>;
 export type QuotaWindow = { label: "5h" | "week"; remaining: number; reset: number };
-export type Usage = { tier?: string; windows: QuotaWindow[] };
+export type Usage = { tier?: string; windows: QuotaWindow[]; resets?: number };
 
 function record(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,7 +98,9 @@ export function parseUsage(value: unknown, now = Date.now()): Usage {
     windows.push({ label, remaining: 100 - entry.used_percent, reset });
   }
   if (!windows.length) throw new Error("No supported quota windows returned.");
-  return { tier: typeof value.plan_type === "string" ? cleanLabel(value.plan_type) : undefined, windows };
+  const credits = value.rate_limit_reset_credits;
+  const resets = record(credits) && typeof credits.available_count === "number" ? credits.available_count : undefined;
+  return { tier: typeof value.plan_type === "string" ? cleanLabel(value.plan_type) : undefined, windows, resets };
 }
 
 function duration(ms: number): string {

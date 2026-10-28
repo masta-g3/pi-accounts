@@ -52,6 +52,7 @@ Each five-cell bar shows remaining quota, followed by the time until that limit 
 
 - `●` marks the active account. Inactive accounts are dimmed. No account is marked when another provider is active.
 - Bars turn amber at 25% or less. Exhausted limits show a red reset countdown.
+- `↻2` after a Codex account means it has 2 rate-limit resets available. It is hidden when there are none.
 - `·····` means loading. `?????` means a window needs a fresh reading. `~` marks stale data.
 - `⚠` replaces the bars when an account has no quota reading, for example after its login expired. Open `/accounts` to see the reason.
 - Narrow panes keep the active account, or the first account when neither is active, and show `+N` when space allows.

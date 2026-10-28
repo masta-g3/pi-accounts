@@ -35,7 +35,8 @@ export function quotaStatus(
     const marker = isActive ? "●" : "";
     const label = fg("accent", `${marker}${account.slot}${stale ? "~" : ""}`);
     if (!state?.usage) return `${label} ${state?.error ? fg("warning", "⚠") : fg("dim", "·····")}`;
-    return `${label} ${state.usage.windows.map(bar).join(" ")}`;
+    const resets = state.usage.resets ? fg("accent", ` ↻${state.usage.resets}`) : "";
+    return `${label} ${state.usage.windows.map(bar).join(" ")}${resets}`;
   };
   const layout = (shown: Account[]) => (["codex", "claude"] as const).flatMap(kind => {
     const members = shown.filter(account => account.kind === kind);

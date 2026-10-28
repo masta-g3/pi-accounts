@@ -88,3 +88,9 @@ test("switch preserves the model, uses the registry, and obeys exact scope", () 
   assert.throws(() => switchTarget(model, providerFor(2), [], []), /available/);
   assert.throws(() => switchTarget({ ...model, provider: "anthropic" }, providerFor(2), [target], []), /Codex model/);
 });
+
+test("reads the owned rate-limit reset count", () => {
+  const rate_limit = { primary_window: window(604800, 67) };
+  assert.equal(parseUsage({ rate_limit, rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 } }, now).resets, 2);
+  assert.equal(parseUsage({ rate_limit }, now).resets, undefined);
+});
