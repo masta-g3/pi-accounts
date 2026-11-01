@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { NATIVE, lastModel, providerFor, readAccounts, slotFor, switchTarget, type Account } from "./accounts.ts";
+import { NATIVE, activeProviderFor, lastModel, providerFor, readAccounts, slotFor, switchTarget, type Account } from "./accounts.ts";
 import { CLAUDE, readClaudeAccount, readClaudeCredential } from "./claude.ts";
 import { accountProvider } from "./provider.ts";
 import { ADD_ACCOUNT, createModelPicker, createPicker, type PickerChoice } from "./picker.ts";
@@ -57,7 +57,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     const width = process.stdout.columns ?? 80;
     const warning = claudeDiscoveryError ? ctx.ui.theme.fg("error", "Claude unavailable") : "";
     const suffix = warning ? ctx.ui.theme.fg("dim", "  │  ") + warning : "";
-    const quota = quotaStatus(visibleAccounts, ctx.model?.provider, account => monitor?.snapshot(account),
+    const quota = quotaStatus(visibleAccounts, activeProviderFor(visibleAccounts, ctx.model?.provider), account => monitor?.snapshot(account),
       ctx.ui.theme, Math.max(0, width - visibleWidth(suffix)));
     const text = quota ? quota + suffix : warning || undefined;
     ctx.ui.setStatus("accounts", text ? truncateToWidth(text, width) : undefined);
@@ -153,7 +153,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
           visibleAccounts = found; claudeDiscoveryError = discovery.claudeError; monitor?.retain(found); status(ctx);
           const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: false });
           let chosen = await ctx.ui.custom<PickerChoice | undefined>((tui, theme, _keys, done) =>
-            createPicker(found, ctx.model?.provider, theme, () => tui.requestRender(), done,
+            createPicker(found, activeProviderFor(found, ctx.model?.provider), theme, () => tui.requestRender(), done,
               account => monitor!.load(account, true), settings.getGlobalSettings().defaultProvider));
           if (!chosen) return;
           if (chosen === ADD_ACCOUNT) {

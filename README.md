@@ -44,6 +44,8 @@ week 89% left · resets Sat 06:00 (in 5d 14h)
 - **Add Codex account** prepares Pi's `/login` command. The extension does not add Claude logins.
 - Model scope applies to session switching. Enable excluded models in `/scoped-models`.
 
+Pi's `openai` ChatGPT plan-sharing login cannot read quota. To see bars while chatting on `openai`, also run `/login openai-codex` with the same ChatGPT account. With exactly one Codex account, it is marked active while chat uses `openai`. With more than one, no account is marked, because the `openai` token does not identify its account.
+
 The first Codex account uses `openai-codex`. Added accounts use `openai-codex-account-2` and later IDs. Claude uses the single `claude-bridge` provider and the login managed by Claude Code. Multiple Claude logins are not supported because the bridge uses one process-wide `CLAUDE_CONFIG_DIR`.
 
 ## Read the bars
