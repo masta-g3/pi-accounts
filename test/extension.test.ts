@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -11,6 +11,8 @@ import { providerFor } from "../src/accounts.ts";
 import { CLAUDE } from "../src/claude.ts";
 
 type HarnessOptions = {
+  hub?: boolean;
+  headless?: boolean;
   claude?: boolean;
   claudeModels?: string[];
   branch?: unknown[];
@@ -25,11 +27,16 @@ type HarnessOptions = {
 function harness(t: TestContext, options: HarnessOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pi-accounts-test-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
+  const previousHub = process.env.PI_AGENT_HUB_DIR;
+  process.env.PI_AGENT_HUB_DIR = join(dir, "hub");
+  if (options.hub) mkdirSync(join(dir, "hub"));
   process.env.PI_CODING_AGENT_DIR = dir;
   t.after(() => {
     handlers.get("session_shutdown")?.({}, ctx);
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
+    if (previousHub === undefined) delete process.env.PI_AGENT_HUB_DIR;
+    else process.env.PI_AGENT_HUB_DIR = previousHub;
     rmSync(dir, { recursive: true, force: true });
   });
   const auth = Object.fromEntries([1, 2].map(slot => [providerFor(slot), {
@@ -49,13 +56,14 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
   let customCount = 0;
   let editor = "";
   const ctx = {
-    cwd: dir, mode: "tui", isIdle: () => idle, model: { provider: providerFor(1), id: "gpt-test" }, scopedModels: [],
+    cwd: dir, mode: options.headless ? "rpc" : "tui", isIdle: () => idle, model: { provider: providerFor(1), id: "gpt-test" }, scopedModels: [],
     modelRegistry: {
       getAvailable: () => [...[1, 2].map(slot => ({ provider: providerFor(slot), id: "gpt-test" })),
         ...(options.claude ? (options.claudeModels ?? ["claude-test"]).map(id => ({ provider: CLAUDE, id })) : [])],
       getProviderAuth: async () => undefined,
+      getAll: () => [],
     },
-    sessionManager: { getBranch: () => options.branch ?? [] },
+    sessionManager: { getBranch: () => options.branch ?? [], getSessionDir: () => join(dir, "sessions/--test--") },
     ui: {
       theme: { fg: (_color: string, text: string) => text },
       custom: async () => {
@@ -462,4 +470,64 @@ test("background readings update bars, stay visible off Codex, and clean up on s
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 2);
   assert.equal(process.stdout.listenerCount("resize"), listeners);
+});
+
+
+test("TUI publishes retained quota errors and account removal; headless publishes nothing", async t => {
+  let now = Date.now();
+  const h = harness(t, { hub: true, claude: true, now: () => now, readClaudeCredential: async () => ({ accessToken: "private", subscriptionType: "max" }) });
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ five_hour: { utilization: 20, resets_at: new Date(Date.now() + 3600000).toISOString() } }));
+  t.after(() => { globalThis.fetch = original; });
+  await h.handlers.get("model_select")?.({}, h.ctx);
+  await new Promise(resolve => setTimeout(resolve, 1150));
+  const path = join(h.dir, "hub/usage/pi-accounts-limits.json");
+  const first = JSON.parse(readFileSync(path, "utf8"));
+  const claude = first.accounts.find((a: any) => a.id === CLAUDE);
+  assert.equal(claude.label, "Claude 1");
+  assert.equal(claude.windows[0].remainingPercent, 80);
+  assert.ok(claude.fetchedAt);
+  assert.doesNotMatch(JSON.stringify(first), /@|private|accountId/);
+  globalThis.fetch = async () => new Response("", { status: 401 });
+  now += 60001;
+  h.ctx.model = { provider: CLAUDE, id: "claude-test" } as Model<any>;
+  await h.handlers.get("after_provider_response")?.({}, h.ctx);
+  await new Promise(resolve => setTimeout(resolve, 1150));
+  const failed = JSON.parse(readFileSync(path, "utf8")).accounts.find((a: any) => a.id === CLAUDE);
+  assert.equal(failed.fetchedAt, claude.fetchedAt);
+  assert.equal(failed.checkedAt, now);
+  assert.deepEqual(failed.windows, claude.windows);
+  assert.match(failed.error, /Claude login expired/);
+  writeFileSync(join(h.dir, "auth.json"), "{}");
+  h.ctx.modelRegistry.getAvailable = () => [];
+  await h.handlers.get("model_select")?.({}, h.ctx);
+  await new Promise(resolve => setTimeout(resolve, 1150));
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).accounts, []);
+  h.handlers.get("session_shutdown")?.({}, h.ctx);
+  const headless = harness(t, { hub: true, headless: true });
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(existsSync(join(headless.dir, "hub/usage")), false);
+});
+
+
+test("history startup and agent-end timers coalesce and shutdown clears all timers", async t => {
+  const pending = new Map<any, { callback: () => void; delay: number }>();
+  let unrefs = 0;
+  const h = harness(t, { hub: true, claude: true,
+    setTimeout: ((callback: () => void, delay: number) => { const timer = { unref: () => { unrefs++; } }; pending.set(timer, { callback, delay }); return timer; }) as any,
+    clearTimeout: ((timer: any) => { pending.delete(timer); }) as any,
+  });
+  mkdirSync(join(h.dir, "sessions/--test--"), { recursive: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal([...pending.values()].filter(x => x.delay === 10000).length, 1);
+  h.handlers.get("agent_end")?.({}, h.ctx); h.handlers.get("agent_end")?.({}, h.ctx);
+  assert.equal([...pending.values()].filter(x => x.delay === 60000).length, 1);
+  const startup = [...pending.entries()].find(([, x]) => x.delay === 10000)!;
+  pending.delete(startup[0]); startup[1].callback();
+  const path = join(h.dir, "hub/usage/pi-accounts-history.json");
+  for (let i = 0; i < 100 && !existsSync(path); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).history.source, `pi-sessions:${h.dir.replace(/^\/var\//, "/private/var/")}/sessions`);
+  assert.ok(unrefs >= 3);
+  h.handlers.get("session_shutdown")?.({}, h.ctx);
+  assert.equal(pending.size, 0);
 });

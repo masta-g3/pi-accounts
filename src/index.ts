@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -9,6 +10,8 @@ import { ADD_ACCOUNT, createModelPicker, createPicker, type PickerChoice } from 
 import { fetchClaudeUsage, fetchCodexUsage } from "./quota.ts";
 import { UsageMonitor } from "./monitor.ts";
 import { quotaStatus } from "./status.ts";
+import { hubDirectory, publishLimits } from "./snapshot.ts";
+import { indexHistory, sessionRoot } from "./history.ts";
 
 const kindOf = (provider: string | undefined) => provider === CLAUDE ? "claude" : slotFor(provider ?? "") ? "codex" : undefined;
 
@@ -49,6 +52,32 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
   let monitor: UsageMonitor | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let deferredClaude: ReturnType<typeof setTimeout> | undefined;
+  let limitsTimer: ReturnType<typeof setTimeout> | undefined;
+  let historyStart: ReturnType<typeof setTimeout> | undefined;
+  let historyAfterEnd: ReturnType<typeof setTimeout> | undefined;
+  let historyInterval: ReturnType<typeof setInterval> | undefined;
+  let historyRunning = false;
+  const publishHistory = async () => {
+    const ctx = sessionContext;
+    if (!ctx || ctx.mode !== "tui" || historyRunning || !existsSync(hubDirectory(getAgentDir()))) return;
+    historyRunning = true;
+    try {
+      await indexHistory({ root: sessionRoot(ctx.sessionManager.getSessionDir(), getAgentDir()), agentDir: getAgentDir(),
+        hubDir: hubDirectory(getAgentDir()), models: ctx.modelRegistry.getAll(), now: dependencies.now() });
+    } catch {
+      if (ctx === sessionContext) ctx.ui.notify("Could not publish Hub usage history.", "warning");
+    } finally { historyRunning = false; }
+  };
+  const scheduleLimits = () => {
+    if (sessionContext?.mode !== "tui" || !existsSync(hubDirectory(getAgentDir()))) return;
+    if (limitsTimer) dependencies.clearTimeout(limitsTimer);
+    limitsTimer = dependencies.setTimeout(() => {
+      limitsTimer = undefined;
+      void publishLimits(hubDirectory(getAgentDir()), visibleAccounts, account => monitor?.snapshot(account), dependencies.now())
+        .catch(() => sessionContext?.ui.notify("Could not publish Hub quota snapshot.", "warning"));
+    }, 1000);
+    limitsTimer.unref();
+  };
   let lastClaudeCheck = 0;
   let tickGeneration = 0;
   let claudeDiscoveryError = false;
@@ -72,6 +101,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       if (generation !== tickGeneration || sessionContext !== ctx) return;
       visibleAccounts = [];
       monitor?.retain([]);
+      scheduleLimits();
       ctx.ui.setStatus("accounts", "Accounts · quota unavailable · check auth.json");
       return;
     }
@@ -80,6 +110,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     claudeDiscoveryError = result.claudeError;
     monitor?.retain(visibleAccounts);
     status(ctx);
+    scheduleLimits();
     for (const account of visibleAccounts) {
       if (account.kind === "claude") {
         const state = monitor?.snapshot(account);
@@ -98,6 +129,12 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
   const stop = () => {
     if (timer) clearInterval(timer);
     if (deferredClaude) dependencies.clearTimeout(deferredClaude);
+    if (limitsTimer) dependencies.clearTimeout(limitsTimer);
+    if (historyStart) dependencies.clearTimeout(historyStart);
+    if (historyAfterEnd) dependencies.clearTimeout(historyAfterEnd);
+    if (historyInterval) clearInterval(historyInterval);
+    historyStart = undefined; historyAfterEnd = undefined; historyInterval = undefined;
+    limitsTimer = undefined;
     timer = undefined; deferredClaude = undefined;
     tickGeneration++;
     claudeDiscoveryError = false;
@@ -111,10 +148,15 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     sessionContext = ctx;
     monitor = new UsageMonitor((account, signal) => account.kind === "claude"
       ? fetchClaudeUsage(dependencies.readClaudeCredential, signal)
-      : fetchCodexUsage(account, async provider => (await ctx.modelRegistry.getProviderAuth(provider))?.auth.apiKey, signal), () => status());
+      : fetchCodexUsage(account, async provider => (await ctx.modelRegistry.getProviderAuth(provider))?.auth.apiKey, signal), () => { status(); scheduleLimits(); }, dependencies.now);
     if (ctx.mode !== "tui") return;
     void tick();
     timer = setInterval(() => { void tick(); }, 30000); timer.unref();
+    if (existsSync(hubDirectory(getAgentDir()))) {
+      historyStart = dependencies.setTimeout(() => { historyStart = undefined; void publishHistory(); }, 10000);
+      historyStart.unref();
+      historyInterval = setInterval(() => { void publishHistory(); }, 300000); historyInterval.unref();
+    }
     process.stdout.on("resize", resize);
   });
   pi.on("model_select", (_event, ctx) => { sessionContext = ctx; void tick(); });
@@ -129,6 +171,12 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
       deferredClaude = dependencies.setTimeout(() => { deferredClaude = undefined; refreshClaude(); }, wait);
       deferredClaude.unref();
     }
+  });
+  pi.on("agent_end", (_event, ctx) => {
+    if (ctx.mode !== "tui" || !existsSync(hubDirectory(getAgentDir()))) return;
+    if (historyAfterEnd) dependencies.clearTimeout(historyAfterEnd);
+    historyAfterEnd = dependencies.setTimeout(() => { historyAfterEnd = undefined; void publishHistory(); }, 60000);
+    historyAfterEnd.unref();
   });
   pi.on("session_shutdown", (_event, ctx) => { stop(); ctx.ui.setStatus("accounts", undefined); });
 
@@ -150,7 +198,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
         while (true) {
           const discovery = await discover(ctx);
           const found = discovery.accounts;
-          visibleAccounts = found; claudeDiscoveryError = discovery.claudeError; monitor?.retain(found); status(ctx);
+          visibleAccounts = found; claudeDiscoveryError = discovery.claudeError; monitor?.retain(found); status(ctx); scheduleLimits();
           const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: false });
           let chosen = await ctx.ui.custom<PickerChoice | undefined>((tui, theme, _keys, done) =>
             createPicker(found, activeProviderFor(found, ctx.model?.provider), theme, () => tui.requestRender(), done,

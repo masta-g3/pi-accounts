@@ -48,7 +48,9 @@ export class UsageMonitor {
       return usage;
     }, error => {
       if (!this.controller.signal.aborted && this.entries.get(account.provider) === next) {
-        next.value = { ...next.value, checkedAt: this.now(), error: true };
+        const message = error instanceof Error ? error.message : "";
+        const safe = /^(Sign in again with \/login\.|Account identity unavailable\. Sign in again\.|Account changed\. Reopen \/accounts\.|Claude login unavailable\. Run Claude Code to sign in\.|Claude login expired; it refreshes the next time Claude runs\.|Quota unavailable \(HTTP \d{3}\)\.)$/.test(message);
+        next.value = { ...next.value, checkedAt: this.now(), error: true, errorMessage: safe ? message : "Quota unavailable." };
         next.failure = error;
         this.onChange();
       }
