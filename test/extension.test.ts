@@ -453,7 +453,8 @@ test("background readings update bars, stay visible off Codex, and clean up on s
     "https://api.openai.com/auth": { chatgpt_account_id: provider === providerFor(1) ? "1" : "2" },
   })).toString("base64url")}.x` } });
   await h.handlers.get("session_start")?.({}, h.ctx);
-  await new Promise(resolve => setImmediate(resolve));
+  // Each load first reads the shared ledger file, so fetches start after file I/O, not one tick.
+  for (let i = 0; i < 200 && calls < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(calls, 2);
   assert.match(h.statuses.at(-1)!, /●1 ▰▰▰▰▱ 1h ▰▰▰▱▱ 1d/);
   process.stdout.emit("resize");
