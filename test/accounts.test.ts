@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 process.env.TZ = "UTC";
 import { test } from "node:test";
-import { accountsFromAuth, lastModel, providerFor, slotFor, parseUsage, usageDetails, usageText, switchTarget } from "../src/accounts.ts";
+import { accountsFromAuth, activeProviderFor, lastModel, providerFor, slotFor, parseUsage, usageDetails, usageText, switchTarget } from "../src/accounts.ts";
 
 const jwt = (payload: object) => `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.x`;
 const credential = (email: string, accountId: string) => ({ type: "oauth", access: jwt({ email, "https://api.openai.com/auth": { chatgpt_account_id: accountId } }), refresh: "test", expires: 9999999999999 });
@@ -93,4 +93,13 @@ test("reads the owned rate-limit reset count", () => {
   const rate_limit = { primary_window: window(604800, 67) };
   assert.equal(parseUsage({ rate_limit, rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 } }, now).resets, 2);
   assert.equal(parseUsage({ rate_limit }, now).resets, undefined);
+});
+
+test("openai chat marks the Codex account only when exactly one exists", () => {
+  const one = accountsFromAuth({ [providerFor(1)]: credential("a@example.com", "a") });
+  const two = accountsFromAuth({ [providerFor(1)]: credential("a@example.com", "a"), [providerFor(2)]: credential("b@example.com", "b") });
+  assert.equal(activeProviderFor(one, "openai"), providerFor(1));
+  assert.equal(activeProviderFor(two, "openai"), "openai");
+  assert.equal(activeProviderFor(two, providerFor(2)), providerFor(2));
+  assert.equal(activeProviderFor(one, undefined), undefined);
 });

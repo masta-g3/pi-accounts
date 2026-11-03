@@ -44,6 +44,8 @@ week 89% left · resets Sat 06:00 (in 5d 14h)
 - **Add Codex account** prepares Pi's `/login` command. The extension does not add Claude logins.
 - Model scope applies to session switching. Enable excluded models in `/scoped-models`.
 
+Pi's `openai` ChatGPT plan-sharing login cannot read quota. To see bars while chatting on `openai`, also run `/login openai-codex` with the same ChatGPT account. With exactly one Codex account, it is marked active while chat uses `openai`. With more than one, no account is marked, because the `openai` token does not identify its account.
+
 The first Codex account uses `openai-codex`. Added accounts use `openai-codex-account-2` and later IDs. Claude uses the single `claude-bridge` provider and the login managed by Claude Code. Multiple Claude logins are not supported because the bridge uses one process-wide `CLAUDE_CONFIG_DIR`.
 
 ## Read the bars
@@ -59,6 +61,19 @@ Each five-cell bar shows remaining quota, followed by the time until that limit 
 
 Quota refreshes every five minutes while the TUI is open. Reset windows are checked within 30 seconds. Claude quota is force-refreshed within 60 seconds after a Claude response. Requests have an eight-second deadline and do not block switching.
 
+## Hub integration
+
+When [pi-agent-hub](https://github.com/masta-g3/pi-agent-hub)'s state directory already exists, TUI sessions publish usage snapshot v1 files for its quota header and Usage view. Set `PI_AGENT_HUB_DIR` to use a custom Hub state directory; otherwise it is `<Pi agent dir>/pi-agent-hub` (normally `~/.pi/agent/pi-agent-hub`). The extension does not create that state directory. Without it, no snapshots or history cache are written. Headless sessions do not publish.
+
+- `usage/pi-accounts-limits.json` contains account labels (`Codex 1`, `Claude 1`), plans, quota windows, reset credits, last successful reading times, and quota errors. Account discovery and quota changes update it after a one-second debounce. A failed refresh retains the previous windows and their original freshness time. The file is also a ledger shared by all sessions: a session reuses any reading or failed attempt from the last five minutes (one minute after a Claude response) instead of requesting quota itself, and a write never replaces a newer reading with an older one. Each entry carries a short hash of the login so a replaced login does not reuse it.
+- `usage/pi-accounts-history.json` contains daily provider/model totals, the last seven days of hourly totals, and daily project totals with session counts. History starts indexing ten seconds after session start, checks every five minutes, and schedules a coalesced check sixty seconds after a response ends. Concurrent sessions share a lock and skip checks completed within five minutes.
+
+History reads Pi's JSONL session logs without changing them. For Pi's standard per-project session directories, it scans all of `<Pi agent dir>/sessions`; an explicit custom session directory is scanned on its own. Appended logs are read incrementally. Rewritten, truncated, and removed logs are reconciled on the next check. Copied history in forks is excluded. Snapshots are written with a temporary file and atomic rename, so Hub never sees half a JSON document.
+
+Recorded cost comes from the logs. The API-equivalent estimate uses recorded positive cost where available, or Pi's current model price catalog for zero-cost subscription usage. Models without a matching price keep their token totals and have a `null` estimate. Cache savings estimate the difference between cache-read and ordinary input prices. **Estimates are not your subscription bill.** Changing the price catalog or local time zone rebuilds the scanned history. Oldest days are omitted if the snapshot exceeds its row limits or 16 MiB.
+
+The local aggregate cache and coordination files live under `<Pi agent dir>/pi-accounts/`: `usage-index.json`, `usage-index-state.json`, and `usage-index.lock` while indexing. Neither snapshots nor the cache contain account emails, credentials, or conversation text. They do include provider/model IDs; history also includes absolute project paths and the scanned session root. Treat these files as local usage data when sharing bug reports.
+
 ## Limits and privacy
 
 - Quota endpoints are undocumented. A quota failure does not prevent account switching.
@@ -67,7 +82,7 @@ Quota refreshes every five minutes while the TUI is open. Reset windows are chec
 - This extension never refreshes or writes Claude credentials. Run Claude Code when its login expires.
 - Account emails appear in the picker and notifications, not in the footer.
 - The picker is TUI-only. Headless sessions do not poll quota.
-- Pressing **d** writes Pi defaults. The extension writes no credentials or quota files.
+- Pressing **d** writes Pi defaults. The extension never writes credentials. With Hub enabled, it writes the quota/history snapshots and aggregate cache described above.
 - Codex account aliases appear in Pi's model selector. Extensions that match provider IDs, such as `pi-openai-fast`, need the added IDs in their own configuration.
 - Do not combine this package with an automatic Codex account router.
 - Pressing **l** does not edit credentials directly. Codex sign-out uses Pi's native `/logout`; Claude sign-out stays in the Claude CLI.
@@ -92,6 +107,8 @@ src/
   provider.ts   Codex account provider delegation
   quota.ts      Codex and Claude usage requests and cancellation
   monitor.ts    In-memory snapshots and shared requests
+  snapshot.ts   Hub quota contract, shared quota ledger, and atomic JSON publishing
+  history.ts    Incremental session index, pricing, rollups, and coordination
   status.ts     Grouped footer bars and responsive layout
   picker.ts     Account and model selection UI
 test/           Isolated tests with synthetic credentials and responses

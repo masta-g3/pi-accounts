@@ -25,6 +25,12 @@ export function slotFor(provider: string): number | undefined {
   return Number.isSafeInteger(slot) ? slot : undefined;
 }
 
+// Pi's `openai` plan-sharing token carries no account identity, so it can only map to a lone Codex account.
+export function activeProviderFor(accounts: Account[], provider: string | undefined): string | undefined {
+  const codex = accounts.filter(account => account.kind === "codex");
+  return provider === "openai" && codex.length === 1 ? codex[0].provider : provider;
+}
+
 export function tokenIdentity(access: string): { email?: string; accountId?: string } {
   let payload: unknown;
   try {

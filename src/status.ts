@@ -3,7 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Account, QuotaWindow, Usage } from "./accounts.ts";
 
 export const REFRESH_MS = 5 * 60000;
-export type QuotaSnapshot = { usage?: Usage; fetchedAt?: number; checkedAt: number; error?: boolean };
+export type QuotaSnapshot = { usage?: Usage; fetchedAt?: number; checkedAt: number; error?: boolean; errorMessage?: string };
 
 function countdown(ms: number): string {
   const minutes = Math.max(1, Math.ceil(ms / 60000));
