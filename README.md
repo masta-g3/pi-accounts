@@ -65,7 +65,7 @@ Quota refreshes every five minutes while the TUI is open. Reset windows are chec
 
 When [pi-agent-hub](https://github.com/masta-g3/pi-agent-hub)'s state directory already exists, TUI sessions publish usage snapshot v1 files for its quota header and Usage view. Set `PI_AGENT_HUB_DIR` to use a custom Hub state directory; otherwise it is `<Pi agent dir>/pi-agent-hub` (normally `~/.pi/agent/pi-agent-hub`). The extension does not create that state directory. Without it, no snapshots or history cache are written. Headless sessions do not publish.
 
-- `usage/pi-accounts-limits.json` contains account labels (`Codex 1`, `Claude 1`), plans, quota windows, reset credits, last successful reading times, and quota errors. Account discovery and quota changes update it after a one-second debounce. A failed refresh retains the previous windows and their original freshness time.
+- `usage/pi-accounts-limits.json` contains account labels (`Codex 1`, `Claude 1`), plans, quota windows, reset credits, last successful reading times, and quota errors. Account discovery and quota changes update it after a one-second debounce. A failed refresh retains the previous windows and their original freshness time. The file is also a ledger shared by all sessions: a session reuses any reading or failed attempt from the last five minutes (one minute after a Claude response) instead of requesting quota itself, and a write never replaces a newer reading with an older one. Each entry carries a short hash of the login so a replaced login does not reuse it.
 - `usage/pi-accounts-history.json` contains daily provider/model totals, the last seven days of hourly totals, and daily project totals with session counts. History starts indexing ten seconds after session start, checks every five minutes, and schedules a coalesced check sixty seconds after a response ends. Concurrent sessions share a lock and skip checks completed within five minutes.
 
 History reads Pi's JSONL session logs without changing them. For Pi's standard per-project session directories, it scans all of `<Pi agent dir>/sessions`; an explicit custom session directory is scanned on its own. Appended logs are read incrementally. Rewritten, truncated, and removed logs are reconciled on the next check. Copied history in forks is excluded. Snapshots are written with a temporary file and atomic rename, so Hub never sees half a JSON document.
@@ -107,7 +107,7 @@ src/
   provider.ts   Codex account provider delegation
   quota.ts      Codex and Claude usage requests and cancellation
   monitor.ts    In-memory snapshots and shared requests
-  snapshot.ts   Hub quota contract mapping and atomic JSON publishing
+  snapshot.ts   Hub quota contract, shared quota ledger, and atomic JSON publishing
   history.ts    Incremental session index, pricing, rollups, and coordination
   status.ts     Grouped footer bars and responsive layout
   picker.ts     Account and model selection UI

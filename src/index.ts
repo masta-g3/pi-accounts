@@ -10,7 +10,7 @@ import { ADD_ACCOUNT, createModelPicker, createPicker, type PickerChoice } from 
 import { fetchClaudeUsage, fetchCodexUsage } from "./quota.ts";
 import { UsageMonitor } from "./monitor.ts";
 import { quotaStatus } from "./status.ts";
-import { hubDirectory, publishLimits } from "./snapshot.ts";
+import { hubDirectory, ledgerQuota, publishLimits, readLedger } from "./snapshot.ts";
 import { indexHistory, sessionRoot } from "./history.ts";
 
 const kindOf = (provider: string | undefined) => provider === CLAUDE ? "claude" : slotFor(provider ?? "") ? "codex" : undefined;
@@ -148,7 +148,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     sessionContext = ctx;
     monitor = new UsageMonitor((account, signal) => account.kind === "claude"
       ? fetchClaudeUsage(dependencies.readClaudeCredential, signal)
-      : fetchCodexUsage(account, async provider => (await ctx.modelRegistry.getProviderAuth(provider))?.auth.apiKey, signal), () => { status(); scheduleLimits(); }, dependencies.now);
+      : fetchCodexUsage(account, async provider => (await ctx.modelRegistry.getProviderAuth(provider))?.auth.apiKey, signal), () => { status(); scheduleLimits(); }, dependencies.now,
+      async account => ledgerQuota(await readLedger(hubDirectory(getAgentDir())), account));
     if (ctx.mode !== "tui") return;
     void tick();
     timer = setInterval(() => { void tick(); }, 30000); timer.unref();
