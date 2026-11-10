@@ -4,7 +4,7 @@ import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-code
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { NATIVE, activeProviderFor, lastModel, providerFor, readAccounts, slotFor, switchTarget, type Account } from "./accounts.ts";
-import { CLAUDE, readClaudeAccount, readClaudeCredential } from "./claude.ts";
+import { CLAUDE_PROVIDERS, isClaude, readClaudeAccount, readClaudeCredential } from "./claude.ts";
 import { accountProvider } from "./provider.ts";
 import { ADD_ACCOUNT, createModelPicker, createPicker, type PickerChoice } from "./picker.ts";
 import { fetchClaudeUsage, fetchCodexUsage } from "./quota.ts";
@@ -13,7 +13,7 @@ import { quotaStatus } from "./status.ts";
 import { hubDirectory, ledgerQuota, publishLimits, readLedger } from "./snapshot.ts";
 import { indexHistory, sessionRoot } from "./history.ts";
 
-const kindOf = (provider: string | undefined) => provider === CLAUDE ? "claude" : slotFor(provider ?? "") ? "codex" : undefined;
+const kindOf = (provider: string | undefined) => isClaude(provider) ? "claude" : slotFor(provider ?? "") ? "codex" : undefined;
 
 export type AccountsDependencies = {
   readClaudeAccount: typeof readClaudeAccount;
@@ -38,10 +38,13 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
   const syncCodex = () => { const found = codexAccounts(); found.forEach(account => register(account.slot)); return found; };
   const discover = async (ctx: ExtensionContext): Promise<{ accounts: Account[]; claudeError: boolean }> => {
     const accounts = syncCodex();
-    if (!ctx.modelRegistry.getAvailable().some(model => model.provider === CLAUDE)) return { accounts, claudeError: false };
+    const available = new Set(ctx.modelRegistry.getAvailable().map(model => model.provider));
+    const provider = isClaude(ctx.model?.provider) && available.has(ctx.model!.provider) ? ctx.model!.provider
+      : CLAUDE_PROVIDERS.find(id => available.has(id));
+    if (!provider) return { accounts, claudeError: false };
     try {
       const claude = await dependencies.readClaudeAccount();
-      if (claude) accounts.push(claude);
+      if (claude) accounts.push({ ...claude, provider });
       return { accounts, claudeError: false };
     } catch {
       return { accounts, claudeError: true };
@@ -162,7 +165,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
   });
   pi.on("model_select", (_event, ctx) => { sessionContext = ctx; void tick(); });
   pi.on("after_provider_response", (_event, ctx) => {
-    if (ctx.model?.provider !== CLAUDE || ctx.mode !== "tui") return;
+    if (!isClaude(ctx.model?.provider) || ctx.mode !== "tui") return;
     const wait = 60000 - (dependencies.now() - lastClaudeCheck);
     if (wait <= 0) {
       if (deferredClaude) dependencies.clearTimeout(deferredClaude);
@@ -185,7 +188,7 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     model.provider === provider && (!ctx.scopedModels.length || ctx.scopedModels.some(item => item.model.provider === provider && item.model.id === model.id)));
   const pickModel = async (ctx: ExtensionCommandContext, provider: string, makeDefault: boolean) => {
     const models = availableFor(ctx, provider);
-    if (!models.length) throw new Error(`No ${provider === CLAUDE ? "Claude" : "Codex"} models available. Check ${provider === CLAUDE ? "pi-claude-bridge and " : ""}/scoped-models.`);
+    if (!models.length) throw new Error(`No ${isClaude(provider) ? "Claude" : "Codex"} models available. Check ${isClaude(provider) ? "pi-claude-code and " : ""}/scoped-models.`);
     return ctx.ui.custom<PickerChoice | undefined>((tui, theme, _keys, done) =>
       createModelPicker(provider, models, makeDefault, theme, () => tui.requestRender(), done));
   };

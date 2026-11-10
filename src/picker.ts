@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, SelectList, truncateToWidth, type SelectItem } from "@earendil-works/pi-tui";
 import { type Account, cleanLabel, type Usage, usageDetails, usageText } from "./accounts.ts";
+import { isClaude } from "./claude.ts";
 
 export const ADD_ACCOUNT = "+add";
 export type PickerChoice = string | { provider: string; model?: string } | { defaultProvider: string; model?: string } | { logoutProvider: string };
@@ -102,7 +103,7 @@ export function createModelPicker(
   list.onCancel = () => done(undefined);
   return {
     render(width: number): string[] {
-      const title = provider === "claude-bridge" ? "Claude models" : "Codex models";
+      const title = isClaude(provider) ? "Claude models" : "Codex models";
       return [theme.fg("accent", theme.bold(title)), "", ...list.render(width), "", theme.fg("dim", "Enter use · Esc back")]
         .map(line => truncateToWidth(line, Math.max(0, width)));
     },

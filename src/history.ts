@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setImmediate as yieldLoop } from "node:timers/promises";
 import { calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
 import { atomicJson, hubExists } from "./snapshot.ts";
+import { isClaude } from "./claude.ts";
 
 type Metrics = [number, number, number, number, number, number, number | null, number | null];
 // Compact tuples keep the per-file cache bounded. They contain aggregates, never messages.
@@ -180,7 +181,7 @@ async function readIndex(path: string, previous: FileIndex | undefined, timeZone
   return entry;
 }
 
-const providerLabel = (id: string) => id.startsWith("openai-codex") ? "Codex" : id === "claude-bridge" ? "Claude" : id === "openai" ? "OpenAI" : id === "anthropic" ? "Anthropic" : id;
+const providerLabel = (id: string) => id.startsWith("openai-codex") ? "Codex" : isClaude(id) ? "Claude" : id === "openai" ? "OpenAI" : id === "anthropic" ? "Anthropic" : id;
 const fields = (metrics: Metrics) => ({ messages: metrics[0], input: metrics[1], output: metrics[2], cacheRead: metrics[3], cacheWrite: metrics[4], cost: metrics[5], estimatedCost: metrics[6], cacheSavings: metrics[7] });
 export function buildHistory(cache: Cache, root: string, now: number) {
   const daily = new Map<string, Bucket>(), hourly = new Map<string, Bucket>();

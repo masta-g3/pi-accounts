@@ -17,7 +17,7 @@ Switching is manual. There is no automatic routing or failover.
 pi install git:github.com/masta-g3/pi-accounts
 ```
 
-Install [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) separately to use Claude. Run `/reload` in an existing Pi session, or start a new session. Tested against Pi 1.3.0. Requires Node 22.19 or later.
+Install [pi-claude-code](https://github.com/earendil-works/pi-claude-code) (recommended) or [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) separately to use Claude. Run `/reload` in an existing Pi session, or start a new session. Tested against Pi 1.3.0. Requires Node 22.19 or later.
 
 ## Use
 
@@ -46,7 +46,7 @@ week 89% left · resets Sat 06:00 (in 5d 14h)
 
 Pi's `openai` ChatGPT plan-sharing login cannot read quota. To see bars while chatting on `openai`, also run `/login openai-codex` with the same ChatGPT account. With exactly one Codex account, it is marked active while chat uses `openai`. With more than one, no account is marked, because the `openai` token does not identify its account.
 
-The first Codex account uses `openai-codex`. Added accounts use `openai-codex-account-2` and later IDs. Claude uses the single `claude-bridge` provider and the login managed by Claude Code. Multiple Claude logins are not supported because the bridge uses one process-wide `CLAUDE_CONFIG_DIR`.
+The first Codex account uses `openai-codex`. Added accounts use `openai-codex-account-2` and later IDs. Claude uses the `claude-code` provider from pi-claude-code, or `claude-bridge` when only pi-claude-bridge is installed. If both are installed, /accounts shows the one the session is using, otherwise `claude-code`. Both use the single login managed by Claude Code, including `PI_CLAUDE_CODE_CONFIG_DIR` or `CLAUDE_CONFIG_DIR`. Multiple Claude logins are not supported because Claude Code uses one process-wide config directory.
 
 ## Read the bars
 
@@ -65,7 +65,7 @@ Quota refreshes every five minutes while the TUI is open. Reset windows are chec
 
 When [pi-agent-hub](https://github.com/masta-g3/pi-agent-hub)'s state directory already exists, TUI sessions publish usage snapshot v1 files for its quota header and Usage view. Set `PI_AGENT_HUB_DIR` to use a custom Hub state directory; otherwise it is `<Pi agent dir>/pi-agent-hub` (normally `~/.pi/agent/pi-agent-hub`). The extension does not create that state directory. Without it, no snapshots or history cache are written. Headless sessions do not publish.
 
-- `usage/pi-accounts-limits.json` contains account labels (`Codex 1`, `Claude 1`), plans, quota windows, reset credits, last successful reading times, and quota errors. Account discovery and quota changes update it after a one-second debounce. A failed refresh retains the previous windows and their original freshness time. The file is also a ledger shared by all sessions: a session reuses any reading or failed attempt from the last five minutes (one minute after a Claude response) instead of requesting quota itself, and a write never replaces a newer reading with an older one. Each entry carries a short hash of the login so a replaced login does not reuse it.
+- `usage/pi-accounts-limits.json` contains account labels (`Codex 1`, `Claude 1`), plans, quota windows, reset credits, last successful reading times, and quota errors. Account discovery and quota changes update it after a one-second debounce. A failed refresh retains the previous windows and their original freshness time. The file is also a ledger shared by all sessions: a session reuses any reading or failed attempt from the last five minutes (one minute after a Claude response) instead of requesting quota itself, and a write never replaces a newer reading with an older one. Each entry carries a short hash of the login so a replaced login does not reuse it. Claude has one entry (`claude`), whichever Claude provider each session uses.
 - `usage/pi-accounts-history.json` contains daily provider/model totals, the last seven days of hourly totals, and daily project totals with session counts. History starts indexing ten seconds after session start, checks every five minutes, and schedules a coalesced check sixty seconds after a response ends. Concurrent sessions share a lock and skip checks completed within five minutes.
 
 History reads Pi's JSONL session logs without changing them. For Pi's standard per-project session directories, it scans all of `<Pi agent dir>/sessions`; an explicit custom session directory is scanned on its own. Appended logs are read incrementally. Rewritten, truncated, and removed logs are reconciled on the next check. Copied history in forks is excluded. Snapshots are written with a temporary file and atomic rename, so Hub never sees half a JSON document.

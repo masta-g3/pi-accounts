@@ -14,6 +14,7 @@ test("Claude keychain service follows Claude Code config naming", () => {
   const env = { HOME: "/home/test", CLAUDE_CONFIG_DIR: "/tmp/Café" };
   const hash = createHash("sha256").update("/tmp/Café".normalize("NFC")).digest("hex").slice(0, 8);
   assert.equal(claudeKeychainService(env), `Claude Code-credentials-${hash}`);
+  assert.equal(claudeKeychainService({ HOME: "/home/test", PI_CLAUDE_CODE_CONFIG_DIR: "/tmp/Café" }), `Claude Code-credentials-${hash}`);
 });
 
 test("reads Claude credentials from keychain then file fallback", async () => {
@@ -27,7 +28,7 @@ test("reads Claude credentials from keychain then file fallback", async () => {
 test("reads Claude account identity and safe label", async () => {
   const account = await readClaudeAccount(io({ readFile: async path => path.endsWith(".credentials.json") ? JSON.stringify(payload)
     : JSON.stringify({ oauthAccount: { emailAddress: "me@example.com", accountUuid: "uuid" } }) }));
-  assert.deepEqual(account, { kind: "claude", slot: 1, provider: "claude-bridge", label: "me@example.com", accountId: "uuid" });
+  assert.deepEqual(account, { kind: "claude", slot: 1, provider: "claude-code", label: "me@example.com", accountId: "uuid" });
   const fallback = await readClaudeAccount(io({ readFile: async path => path.endsWith(".credentials.json") ? JSON.stringify(payload) : undefined }));
   assert.equal(fallback?.label, "Claude");
 });

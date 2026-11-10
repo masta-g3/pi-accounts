@@ -6,7 +6,10 @@ import { promisify } from "node:util";
 import type { Account } from "./accounts.ts";
 import { cleanLabel } from "./accounts.ts";
 
-export const CLAUDE = "claude-bridge";
+// pi-claude-code first; pi-claude-bridge remains supported. Both share Claude Code's single login.
+export const CLAUDE_PROVIDERS = ["claude-code", "claude-bridge"] as const;
+export const CLAUDE = CLAUDE_PROVIDERS[0];
+export const isClaude = (provider: string | undefined) => (CLAUDE_PROVIDERS as readonly (string | undefined)[]).includes(provider);
 export type ClaudeCredential = { accessToken: string; expiresAt?: number; subscriptionType?: string };
 export type ClaudeIo = {
   platform: NodeJS.Platform;
@@ -30,11 +33,13 @@ const defaultIo: ClaudeIo = {
   },
 };
 
+// pi-claude-code passes PI_CLAUDE_CODE_CONFIG_DIR to Claude Code as CLAUDE_CONFIG_DIR.
+const configOverride = (env: NodeJS.ProcessEnv) => env.PI_CLAUDE_CODE_CONFIG_DIR || env.CLAUDE_CONFIG_DIR;
 export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  return (env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude")).normalize("NFC");
+  return (configOverride(env) || join(env.HOME || homedir(), ".claude")).normalize("NFC");
 }
 export function claudeKeychainService(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CLAUDE_CONFIG_DIR ? `Claude Code-credentials-${createHash("sha256").update(claudeConfigDir(env)).digest("hex").slice(0, 8)}`
+  return configOverride(env) ? `Claude Code-credentials-${createHash("sha256").update(claudeConfigDir(env)).digest("hex").slice(0, 8)}`
     : "Claude Code-credentials";
 }
 function credential(text: string | undefined): ClaudeCredential | undefined {
@@ -58,7 +63,7 @@ export async function readClaudeCredential(io: ClaudeIo = defaultIo): Promise<Cl
 export async function readClaudeAccount(io: ClaudeIo = defaultIo): Promise<Account | undefined> {
   if (!await readClaudeCredential(io)) return undefined;
   let identity: any;
-  const identityDir = io.env.CLAUDE_CONFIG_DIR || io.env.HOME || homedir();
+  const identityDir = configOverride(io.env) || io.env.HOME || homedir();
   try { identity = JSON.parse(await io.readFile(join(identityDir, ".claude.json")) ?? "null")?.oauthAccount; } catch {}
   return { kind: "claude", slot: 1, provider: CLAUDE,
     label: typeof identity?.emailAddress === "string" ? cleanLabel(identity.emailAddress) || "Claude" : "Claude",

@@ -15,6 +15,7 @@ type HarnessOptions = {
   headless?: boolean;
   claude?: boolean;
   claudeModels?: string[];
+  claudeProviders?: string[];
   branch?: unknown[];
   readClaudeAccount?: () => Promise<any>;
   readClaudeCredential?: () => Promise<any>;
@@ -59,7 +60,7 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
     cwd: dir, mode: options.headless ? "rpc" : "tui", isIdle: () => idle, model: { provider: providerFor(1), id: "gpt-test" }, scopedModels: [],
     modelRegistry: {
       getAvailable: () => [...[1, 2].map(slot => ({ provider: providerFor(slot), id: "gpt-test" })),
-        ...(options.claude ? (options.claudeModels ?? ["claude-test"]).map(id => ({ provider: CLAUDE, id })) : [])],
+        ...(options.claude ? (options.claudeProviders ?? [CLAUDE]).flatMap(provider => (options.claudeModels ?? ["claude-test"]).map(id => ({ provider, id }))) : [])],
       getProviderAuth: async () => undefined,
       getAll: () => [],
     },
@@ -362,6 +363,19 @@ test("Claude account appears only when bridge models and credentials are both av
   assert.match(found.statuses.at(-1)!, /Claude/);
 });
 
+test("Claude account uses pi-claude-bridge when pi-claude-code is absent, and the active Claude provider when both exist", async t => {
+  const bridge = harness(t, { claude: true, claudeProviders: ["claude-bridge"], branch: [{ type: "model_change", provider: "claude-bridge", modelId: "claude-test" }] });
+  await bridge.run("claude-bridge");
+  assert.deepEqual(bridge.switched.at(-1), { provider: "claude-bridge", id: "claude-test" });
+
+  const both = harness(t, { claude: true, claudeProviders: ["claude-bridge", CLAUDE], branch: [{ type: "model_change", provider: CLAUDE, modelId: "claude-test" }] });
+  await both.run(CLAUDE);
+  assert.deepEqual(both.switched.at(-1), { provider: CLAUDE, id: "claude-test" });
+  both.ctx.model = { provider: "claude-bridge", id: "claude-test" } as Model<any>;
+  await both.run({ defaultProvider: "claude-bridge" }, { defaultProvider: "claude-bridge", model: "claude-test" });
+  assert.match(both.notifications.at(-1)!, /Claude is now the default/);
+});
+
 test("Claude discovery failure keeps Codex accounts and reports the isolated error", async t => {
   const h = harness(t, { claude: true, readClaudeAccount: async () => { throw new Error("credential file unreadable"); } });
   await new Promise(resolve => setImmediate(resolve));
@@ -484,7 +498,7 @@ test("TUI publishes retained quota errors and account removal; headless publishe
   await new Promise(resolve => setTimeout(resolve, 1150));
   const path = join(h.dir, "hub/usage/pi-accounts-limits.json");
   const first = JSON.parse(readFileSync(path, "utf8"));
-  const claude = first.accounts.find((a: any) => a.id === CLAUDE);
+  const claude = first.accounts.find((a: any) => a.id === "claude");
   assert.equal(claude.label, "Claude 1");
   assert.equal(claude.windows[0].remainingPercent, 80);
   assert.ok(claude.fetchedAt);
@@ -494,7 +508,7 @@ test("TUI publishes retained quota errors and account removal; headless publishe
   h.ctx.model = { provider: CLAUDE, id: "claude-test" } as Model<any>;
   await h.handlers.get("after_provider_response")?.({}, h.ctx);
   await new Promise(resolve => setTimeout(resolve, 1150));
-  const failed = JSON.parse(readFileSync(path, "utf8")).accounts.find((a: any) => a.id === CLAUDE);
+  const failed = JSON.parse(readFileSync(path, "utf8")).accounts.find((a: any) => a.id === "claude");
   assert.equal(failed.fetchedAt, claude.fetchedAt);
   assert.equal(failed.checkedAt, now);
   assert.deepEqual(failed.windows, claude.windows);
