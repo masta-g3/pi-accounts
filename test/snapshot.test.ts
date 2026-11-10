@@ -16,7 +16,7 @@ test("limits map safe labels, plans, freshness, resets and errors without identi
   ] }] });
   assert.match(value.accounts[0].key, /^[0-9a-f]{16}$/);
   assert.doesNotMatch(JSON.stringify(value), /secret|@|accountId/);
-  assert.deepEqual(limitsSnapshot([{ kind: "claude", slot: 1, provider: "claude-bridge", label: "private" }], () => undefined, 1).accounts, [{ id: "claude-bridge", key: limitsSnapshot([{ kind: "claude", slot: 1, provider: "claude-bridge", label: "private" }], () => undefined, 1).accounts[0].key, provider: "Claude", label: "Claude 1", windows: [] }]);
+  assert.deepEqual(limitsSnapshot([{ kind: "claude", slot: 1, provider: "claude-bridge", label: "private" }], () => undefined, 1).accounts, [{ id: "claude", key: limitsSnapshot([{ kind: "claude", slot: 1, provider: "claude-bridge", label: "private" }], () => undefined, 1).accounts[0].key, provider: "Claude", label: "Claude 1", windows: [] }]);
 });
 
 test("publishing requires an existing Hub dir and uses complete atomic files", async t => {
@@ -57,4 +57,15 @@ test("publishing merges the shared ledger by newest reading per account", async 
   assert.equal(ledgerQuota(ledger, { ...claude, label: "other@example.com" }), undefined, "a replaced login cannot reuse the entry");
   assert.doesNotMatch(await readFile(join(hub, "usage/pi-accounts-limits.json"), "utf8"), /example|acct-a/);
   assert.deepEqual(await readLedger(join(hub, "missing")), new Map());
+});
+
+test("Claude shares one ledger entry whichever Claude provider a session uses", async t => {
+  const hub = await mkdtemp(join(tmpdir(), "accounts-claude-ledger-"));
+  t.after(() => rm(hub, { recursive: true, force: true }));
+  const code = { kind: "claude" as const, slot: 1, provider: "claude-code", label: "b@example.com" };
+  const bridge = { ...code, provider: "claude-bridge" };
+  await publishLimits(hub, [code], () => ({ usage: { windows: [{ label: "week" as const, remaining: 40, reset: 9e12 }] }, fetchedAt: 900, checkedAt: 900 }), 1000);
+  await publishLimits(hub, [bridge], () => undefined, 1100);
+  assert.equal(ledgerQuota(await readLedger(hub), code)?.usage?.windows[0].remaining, 40);
+  assert.deepEqual(JSON.parse(await readFile(join(hub, "usage/pi-accounts-limits.json"), "utf8")).accounts.map((a: any) => a.id), ["claude"]);
 });

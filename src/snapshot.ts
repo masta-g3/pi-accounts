@@ -26,7 +26,7 @@ export function limitsSnapshot(accounts: Account[], snapshot: (account: Account)
   return { version: 1, producer: "pi-accounts", updatedAt: now, accounts: accounts.slice(0, 32).map(account => {
     const state = snapshot(account);
     const provider = account.kind === "codex" ? "Codex" : "Claude";
-    return { id: account.provider, key: ledgerKey(account), provider, label: `${provider} ${account.slot}`,
+    return { id: ledgerId(account), key: ledgerKey(account), provider, label: `${provider} ${account.slot}`,
       ...(state?.usage?.tier ? { plan: state.usage.tier } : {}),
       ...(state ? { checkedAt: state.checkedAt } : {}),
       ...(state?.fetchedAt !== undefined ? { fetchedAt: state.fetchedAt } : {}),
@@ -40,8 +40,11 @@ export function limitsSnapshot(accounts: Account[], snapshot: (account: Account)
 
 // The limits file doubles as a ledger shared by every Pi session, so one
 // reading serves all of them and an older session cannot overwrite a newer one.
+// Claude is one Claude Code login whichever provider a session uses, so its entry
+// must not depend on the session's provider.
+const ledgerId = (account: Account) => account.kind === "claude" ? "claude" : account.provider;
 const ledgerKey = (account: Account) => createHash("sha256")
-  .update(JSON.stringify([account.provider, account.accountId, account.label])).digest("hex").slice(0, 16);
+  .update(JSON.stringify([ledgerId(account), account.accountId, account.label])).digest("hex").slice(0, 16);
 const limitsPath = (dir: string) => join(dir, "usage/pi-accounts-limits.json");
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
@@ -65,7 +68,7 @@ export async function readLedger(dir: string): Promise<Map<string, LedgerEntry>>
 }
 
 export function ledgerQuota(ledger: Map<string, LedgerEntry>, account: Account): QuotaSnapshot | undefined {
-  const entry = ledger.get(account.provider);
+  const entry = ledger.get(ledgerId(account));
   if (entry?.key !== ledgerKey(account)) return undefined;
   const { key: _, ...quota } = entry;
   return quota;
