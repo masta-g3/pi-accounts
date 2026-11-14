@@ -4,7 +4,7 @@ import { type Account, cleanLabel, type Usage, usageDetails, usageText } from ".
 import { isClaude } from "./claude.ts";
 
 export const ADD_ACCOUNT = "+add";
-export type PickerChoice = string | { provider: string; model?: string } | { defaultProvider: string; model?: string } | { logoutProvider: string };
+export type PickerChoice = string | { provider: string; model?: string } | { defaultProvider: string; model?: string } | { logoutProvider: string } | { toggleAutoResume: true };
 
 export function createPicker(
   accounts: Account[],
@@ -14,6 +14,7 @@ export function createPicker(
   done: (choice: PickerChoice | undefined) => void,
   loadUsage: (account: Account, signal: AbortSignal) => Promise<Usage>,
   defaultProvider?: string,
+  autoResume = false,
 ) {
   const controller = new AbortController();
   const details = new Map<string, string[]>();
@@ -65,10 +66,12 @@ export function createPicker(
         ...list.render(width),
         "",
         ...detail.map(line => theme.fg("muted", line)),
-        theme.fg("dim", selected?.value === ADD_ACCOUNT ? "Enter add · Esc close" : "↑↓ · Enter use · d default · l sign out · Esc close"),
+        theme.fg("muted", `Auto-resume: ${autoResume ? "on · a to turn off" : "off · a to turn on"}`),
+        theme.fg("dim", selected?.value === ADD_ACCOUNT ? "Enter add · a auto-resume · Esc close" : "↑↓ · Enter use · d default · a auto-resume · l sign out · Esc close"),
       ].map(line => truncateToWidth(line, Math.max(0, width)));
     },
     handleInput(data: string) {
+      if (matchesKey(data, "a")) { finish({ toggleAutoResume: true }); return; }
       if (matchesKey(data, "d") || matchesKey(data, "l")) {
         const selected = list.getSelectedItem();
         if (selected && selected.value !== ADD_ACCOUNT) {

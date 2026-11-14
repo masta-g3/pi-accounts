@@ -111,3 +111,48 @@ test("a recent shared failure is adopted instead of retrying, and expired window
   assert.equal(calls, 1, "a reading taken before its window reset is not reused");
   monitor.stop();
 });
+
+test("a reading must follow notBefore: older local, shared and in-flight readings are not reused", async () => {
+  let now = 10 * REFRESH_MS;
+  const pending: ((value: Usage) => void)[] = [];
+  const exhausted: Usage = { windows: [{ label: "5h", remaining: 0, reset: now + 3600000 }] };
+  let shared: QuotaSnapshot | undefined;
+  const monitor = new UsageMonitor(() => new Promise(resolve => pending.push(resolve)), () => {}, () => now, async () => shared);
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const first = monitor.load(account);
+  await tick();
+  pending[0](usage(now));
+  await first;
+  const failure = now + 1000;
+  now += 2000;
+  shared = { usage: usage(now), fetchedAt: failure - 500, checkedAt: failure - 500 };
+  const refetched = monitor.load(account, true, failure);
+  await tick();
+  assert.equal(pending.length, 2, "local and shared readings from before the failure are not reused");
+  pending[1](exhausted);
+  assert.equal((await refetched).windows[0].remaining, 0);
+  now += 1000;
+  shared = { usage: usage(now), fetchedAt: now - 10, checkedAt: now - 10 };
+  assert.equal((await monitor.load(account, true, failure)).windows[0].remaining, 80);
+  assert.equal(pending.length, 2, "another session's reading after the failure is shared");
+
+  now += REFRESH_MS;
+  shared = undefined;
+  const early = monitor.load(account);
+  await tick();
+  assert.equal(pending.length, 3);
+  now += 5;
+  const late = monitor.load(account, true, now - 1);
+  assert.notEqual(late, early, "an in-flight request started before notBefore is not joined");
+  await tick();
+  assert.equal(pending.length, 3, "the older request finishes before another one starts");
+  pending[2](usage(now));
+  await early;
+  await tick();
+  assert.equal(pending.length, 4, "the pre-failure result cannot satisfy the fresh request");
+  pending[3](exhausted);
+  assert.equal((await late).windows[0].remaining, 0);
+  await early;
+  assert.equal(monitor.snapshot(account)?.usage?.windows[0].remaining, 0, "the replaced request cannot overwrite the newer reading");
+  monitor.stop();
+});

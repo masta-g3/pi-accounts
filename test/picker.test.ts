@@ -108,3 +108,22 @@ test("quota failure keeps accounts selectable and gives an actionable detail", a
   assert.equal(selected, accounts[0].provider);
   picker.dispose();
 });
+
+test("a toggles auto-resume from any row and the picker shows its state", () => {
+  let selected: PickerChoice | undefined;
+  const off = createPicker(accounts, accounts[0].provider, theme, () => {}, value => { selected = value; }, () => new Promise(() => {}), undefined, false);
+  const text = off.render(120).join("\n");
+  assert.match(text, /Auto-resume: off · a to turn on/);
+  assert.match(text, /d default · a auto-resume · l sign out/);
+  off.handleInput("a");
+  assert.deepEqual(selected, { toggleAutoResume: true });
+  off.dispose();
+
+  selected = undefined;
+  const on = createPicker([], undefined, theme, () => {}, value => { selected = value; }, () => new Promise(() => {}), undefined, true);
+  assert.match(on.render(120).join("\n"), /Auto-resume: on · a to turn off/);
+  assert.match(on.render(120).join("\n"), /Enter add · a auto-resume · Esc close/);
+  on.handleInput("a");
+  assert.deepEqual(selected, { toggleAutoResume: true });
+  on.dispose();
+});

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { NATIVE, activeProviderFor, lastModel, providerFor, readAccounts, slotFor, switchTarget, type Account } from "./accounts.ts";
+import { NATIVE, activeProviderFor, duration, lastModel, providerFor, readAccounts, resetAt, slotFor, switchTarget, type Account } from "./accounts.ts";
 import { CLAUDE_PROVIDERS, isClaude, readClaudeAccount, readClaudeCredential } from "./claude.ts";
 import { accountProvider } from "./provider.ts";
 import { ADD_ACCOUNT, createModelPicker, createPicker, type PickerChoice } from "./picker.ts";
@@ -12,6 +12,7 @@ import { UsageMonitor } from "./monitor.ts";
 import { quotaStatus } from "./status.ts";
 import { hubDirectory, ledgerQuota, publishLimits, readLedger } from "./snapshot.ts";
 import { indexHistory, sessionRoot } from "./history.ts";
+import { RESUME_MAX_ATTEMPTS, RESUME_MESSAGE, readAutoResume, resumeAt, writeAutoResume } from "./resume.ts";
 
 const kindOf = (provider: string | undefined) => isClaude(provider) ? "claude" : slotFor(provider ?? "") ? "codex" : undefined;
 
@@ -21,6 +22,7 @@ export type AccountsDependencies = {
   now: () => number;
   setTimeout: typeof setTimeout;
   clearTimeout: typeof clearTimeout;
+  random?: () => number;
 };
 
 export default function accountsExtension(pi: ExtensionAPI, dependencies: AccountsDependencies = {
@@ -81,6 +83,57 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     }, 1000);
     limitsTimer.unref();
   };
+  // Auto-resume: a timer armed after a usage-limit error; every cancel bumps the generation so in-flight work cannot re-arm it.
+  let run: { account?: Account; generation: number } | undefined;
+  let settled: { outcome: string; at: number; account?: Account; generation: number } | undefined;
+  let resume: { timer: ReturnType<typeof setTimeout>; at: number } | undefined;
+  let resumeGeneration = 0;
+  let resumeAttempts = 0;
+  let capNotified = false;
+  const cancelResume = () => {
+    settled = undefined;
+    resumeGeneration++;
+    if (resume) dependencies.clearTimeout(resume.timer);
+    const shown = resume !== undefined;
+    resume = undefined;
+    if (shown) status();
+  };
+  const sameAccount = (a: Account, b: Account | undefined) => b?.provider === a.provider && b.accountId === a.accountId && b.label === a.label;
+  const fireResume = async (account: Account, generation: number) => {
+    const valid = () => generation === resumeGeneration && sessionContext !== undefined;
+    const on = await readAutoResume(getAgentDir());
+    if (!valid()) return;
+    const ctx = sessionContext!;
+    const found = on && ctx.isIdle() ? (await discover(ctx)).accounts : [];
+    if (!valid()) return;
+    resume = undefined;
+    status();
+    if (!ctx.isIdle() || !sameAccount(account, found.find(item => item.provider === activeProviderFor(found, ctx.model?.provider)))) return;
+    resumeAttempts++;
+    pi.sendUserMessage(RESUME_MESSAGE);
+  };
+  const armResume = async (ctx: ExtensionContext, account: Account, notBefore: number, generation: number) => {
+    if (!await readAutoResume(getAgentDir()) || generation !== resumeGeneration) return;
+    if (resumeAttempts >= RESUME_MAX_ATTEMPTS) {
+      if (!capNotified) ctx.ui.notify(`Auto-resume stopped after ${RESUME_MAX_ATTEMPTS} attempts.`, "warning");
+      capNotified = true;
+      return;
+    }
+    if (!monitor) return;
+    const usage = await monitor.load(account, true, notBefore).catch(() => undefined);
+    const now = dependencies.now();
+    const at = resumeAt(usage, now, dependencies.random ?? Math.random);
+    if (at === undefined || generation !== resumeGeneration || !ctx.isIdle()) return;
+    cancelResume();
+    const armed = resumeGeneration;
+    const timer = dependencies.setTimeout(() => {
+      void fireResume(account, armed).catch(() => sessionContext?.ui.notify("Auto-resume could not continue the session. Check /accounts.", "error"));
+    }, at - now);
+    timer.unref();
+    resume = { timer, at };
+    status();
+    ctx.ui.notify(`Usage limit reached. Auto-resume at ${resetAt(at, now)} (in ${duration(at - now)}).`, "info");
+  };
   let lastClaudeCheck = 0;
   let tickGeneration = 0;
   let claudeDiscoveryError = false;
@@ -88,16 +141,22 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     if (!ctx || ctx.mode !== "tui") return;
     const width = process.stdout.columns ?? 80;
     const warning = claudeDiscoveryError ? ctx.ui.theme.fg("error", "Claude unavailable") : "";
-    const suffix = warning ? ctx.ui.theme.fg("dim", "  │  ") + warning : "";
+    const extras = [...(resume ? [ctx.ui.theme.fg("accent", `↻ ${resetAt(resume.at, dependencies.now())}`)] : []), ...(warning ? [warning] : [])];
+    const separator = ctx.ui.theme.fg("dim", "  │  ");
+    const suffix = extras.map(text => separator + text).join("");
     const quota = quotaStatus(visibleAccounts, activeProviderFor(visibleAccounts, ctx.model?.provider), account => monitor?.snapshot(account),
       ctx.ui.theme, Math.max(0, width - visibleWidth(suffix)));
-    const text = quota ? quota + suffix : warning || undefined;
+    const text = quota ? quota + suffix : extras.join(separator) || undefined;
     ctx.ui.setStatus("accounts", text ? truncateToWidth(text, width) : undefined);
   };
   const tick = async () => {
     const ctx = sessionContext;
     if (!ctx || ctx.mode !== "tui") return;
     const generation = ++tickGeneration;
+    if (resume) {
+      const armed = resumeGeneration;
+      void readAutoResume(getAgentDir()).then(on => { if (!on && armed === resumeGeneration) cancelResume(); }, () => {});
+    }
     let result: { accounts: Account[]; claudeError: boolean };
     try { result = await discover(ctx); }
     catch {
@@ -137,6 +196,8 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     if (historyAfterEnd) dependencies.clearTimeout(historyAfterEnd);
     if (historyInterval) clearInterval(historyInterval);
     historyStart = undefined; historyAfterEnd = undefined; historyInterval = undefined;
+    cancelResume();
+    run = undefined; settled = undefined; resumeAttempts = 0; capNotified = false;
     limitsTimer = undefined;
     timer = undefined; deferredClaude = undefined;
     tickGeneration++;
@@ -163,7 +224,28 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
     }
     process.stdout.on("resize", resize);
   });
-  pi.on("model_select", (_event, ctx) => { sessionContext = ctx; void tick(); });
+  pi.on("model_select", (_event, ctx) => { sessionContext = ctx; cancelResume(); void tick(); });
+  pi.on("input", event => {
+    if (event.source === "extension") return;
+    cancelResume();
+    resumeAttempts = 0; capNotified = false;
+  });
+  pi.on("agent_start", (_event, ctx) => {
+    settled = undefined;
+    run = { generation: resumeGeneration,
+      account: visibleAccounts.find(item => item.provider === activeProviderFor(visibleAccounts, ctx.model?.provider)) };
+  });
+  pi.on("agent_before_settle", event => {
+    settled = run && run.generation === resumeGeneration ? { ...run, outcome: event.outcome, at: dependencies.now() } : undefined;
+  });
+  pi.on("agent_settled", (event, ctx) => {
+    const last = settled;
+    settled = undefined;
+    if (event.aborted) { cancelResume(); return; }
+    if (ctx.mode !== "tui" || !last || last.generation !== resumeGeneration) return;
+    if (last.outcome === "error") return last.account ? armResume(ctx, last.account, last.at, last.generation) : undefined;
+    resumeAttempts = 0; capNotified = false;
+  });
   pi.on("after_provider_response", (_event, ctx) => {
     if (!isClaude(ctx.model?.provider) || ctx.mode !== "tui") return;
     const wait = 60000 - (dependencies.now() - lastClaudeCheck);
@@ -204,10 +286,17 @@ export default function accountsExtension(pi: ExtensionAPI, dependencies: Accoun
           const found = discovery.accounts;
           visibleAccounts = found; claudeDiscoveryError = discovery.claudeError; monitor?.retain(found); status(ctx); scheduleLimits();
           const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: false });
+          const autoResume = await readAutoResume(getAgentDir());
           let chosen = await ctx.ui.custom<PickerChoice | undefined>((tui, theme, _keys, done) =>
             createPicker(found, activeProviderFor(found, ctx.model?.provider), theme, () => tui.requestRender(), done,
-              account => monitor!.load(account, true), settings.getGlobalSettings().defaultProvider));
+              account => monitor!.load(account, true), settings.getGlobalSettings().defaultProvider, autoResume));
           if (!chosen) return;
+          if (typeof chosen !== "string" && "toggleAutoResume" in chosen) {
+            await writeAutoResume(getAgentDir(), !autoResume);
+            if (autoResume) cancelResume();
+            ctx.ui.notify(`Auto-resume ${autoResume ? "off" : "on"} for all sessions.`, "info");
+            continue;
+          }
           if (chosen === ADD_ACCOUNT) {
             let slot = 1; while (found.some(account => account.kind === "codex" && account.slot === slot)) slot++;
             register(slot); const command = `/login ${providerFor(slot)}`; const hasDraft = Boolean(ctx.ui.getEditorText().trim());

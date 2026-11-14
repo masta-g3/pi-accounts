@@ -63,7 +63,7 @@ test("passes terminal errors through under the selected account", async () => {
 
 test("native request conversion preserves tool-call pairs through an account alias", async () => {
   const alias = accountProvider(openaiCodexProvider(), providerFor(2), "Second");
-  const model = alias.getModels().find(model => model.id === "gpt-5.5")!;
+  const model = alias.getModels()[0];
   const toolCall = { type: "toolCall" as const, id: "call_test|fc_test", name: "read", arguments: { path: "file.txt" } };
   const context = normalizeContext({ messages: [
     { role: "user", content: "Read file.txt", timestamp: 0 },
