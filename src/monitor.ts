@@ -3,7 +3,7 @@ import { REFRESH_MS, type QuotaSnapshot } from "./status.ts";
 
 const FORCED_REUSE_MS = 60000;
 
-type Entry = { identity: string; value?: QuotaSnapshot; pending?: Promise<Usage>; failure?: unknown };
+type Entry = { identity: string; value?: QuotaSnapshot; pending?: Promise<Usage>; startedAt?: number; failure?: unknown };
 const identity = (account: Account) => JSON.stringify([account.accountId, account.label]);
 
 // Keep the newest successful reading, and its error only when a later attempt failed.
@@ -33,9 +33,9 @@ export class UsageMonitor {
   }
 
   // Another session's attempt counts when it is recent and happened after any expired window reset.
-  private reusable(state: QuotaSnapshot, force: boolean): boolean {
+  private reusable(state: QuotaSnapshot, force: boolean, notBefore: number): boolean {
     const age = this.now() - state.checkedAt;
-    if (age < 0 || age >= (force ? FORCED_REUSE_MS : REFRESH_MS) || (!state.usage && !state.error)) return false;
+    if (state.checkedAt < notBefore || age < 0 || age >= (force ? FORCED_REUSE_MS : REFRESH_MS) || (!state.usage && !state.error)) return false;
     return (state.usage?.windows ?? []).every(window => window.reset > this.now() || state.checkedAt > window.reset);
   }
 
@@ -50,22 +50,27 @@ export class UsageMonitor {
     }
   }
 
-  load(account: Account, force = false): Promise<Usage> {
+  /** `notBefore` rejects readings and in-flight requests that started earlier, for example before a failure. */
+  load(account: Account, force = false, notBefore = -Infinity): Promise<Usage> {
     if (this.controller.signal.aborted) return Promise.reject(this.controller.signal.reason);
     const previous = this.entries.get(account.provider);
     const entry = previous?.identity === identity(account) ? previous : undefined;
-    if (entry?.pending) return entry.pending;
-    if (entry?.value && !force && this.now() - entry.value.checkedAt < REFRESH_MS
+    if (entry?.pending) {
+      if (entry.startedAt! >= notBefore) return entry.pending;
+      // Let an older request finish, but do not mistake its late completion for a post-failure reading.
+      return entry.pending.catch(() => undefined).then(() => this.load(account, force, notBefore));
+    }
+    if (entry?.value && entry.startedAt! >= notBefore && !force && this.now() - entry.value.checkedAt < REFRESH_MS
       && (entry.value.error || !entry.value.usage?.windows.some(window => window.reset <= this.now()))) {
       return entry.value.error ? Promise.reject(entry.failure) : Promise.resolve(entry.value.usage!);
     }
     // checkedAt advances only when an attempt completes, so an in-flight request never looks fresh in the ledger.
-    const next: Entry = { identity: identity(account), value: entry?.value };
+    const next: Entry = { identity: identity(account), value: entry?.value, startedAt: this.now() };
     this.entries.set(account.provider, next);
     const adopt = async (): Promise<Usage | undefined> => {
-      const state = mergeQuota(next.value, await this.shared?.(account).catch(() => undefined));
+      const state = mergeQuota(entry?.startedAt! >= notBefore ? next.value : undefined, await this.shared?.(account).catch(() => undefined));
       this.controller.signal.throwIfAborted();
-      if (!state || !this.reusable(state, force)) return undefined;
+      if (!state || !this.reusable(state, force, notBefore)) return undefined;
       const failure = state.error || !state.usage ? new Error(state.errorMessage ?? "Quota unavailable.") : undefined;
       if (this.entries.get(account.provider) === next) {
         next.value = state;

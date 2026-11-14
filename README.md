@@ -9,7 +9,7 @@ See remaining Codex and Claude Code quota in Pi's footer. Use `/accounts` to swi
 Codex ●1 ▰▰▰▰▱ 3h ▰▰▰▱▱ 5d · 2 ▰▰▰▰▰ 2h ▰▰▰▰▱ 6d  │  Claude 1 ▰▰▰▰▰ 4h ▰▰▰▰▱ 6d
 ```
 
-Switching is manual. There is no automatic routing or failover.
+Switching is manual. There is no automatic routing or failover. Optional [auto-resume](#auto-resume) continues a session on the same account after its limit resets.
 
 ## Install
 
@@ -17,7 +17,7 @@ Switching is manual. There is no automatic routing or failover.
 pi install git:github.com/masta-g3/pi-accounts
 ```
 
-Install [pi-claude-code](https://github.com/earendil-works/pi-claude-code) (recommended) or [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) separately to use Claude. Run `/reload` in an existing Pi session, or start a new session. Tested against Pi 1.3.0. Requires Node 22.19 or later.
+Install [pi-claude-code](https://github.com/earendil-works/pi-claude-code) (recommended) or [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) separately to use Claude. Run `/reload` in an existing Pi session, or start a new session. Requires Pi 1.5.2 or later and Node 22.19 or later.
 
 ## Use
 
@@ -34,12 +34,14 @@ Codex ↔ Codex keeps the model · Claude uses its last model
 pro
 5h 98% left · resets 20:20 (in 4h 47m)
 week 89% left · resets Sat 06:00 (in 5d 14h)
-↑↓ · Enter use · d default · l sign out · Esc close
+Auto-resume: off · a to turn on
+↑↓ · Enter use · d default · a auto-resume · l sign out · Esc close
 ```
 
 - **Enter** switches to the selected account. Codex-to-Codex keeps the model ID.
 - A cross-provider switch uses the last model used on that provider in the current session branch. If there is no valid model in history, choose one from a second list.
 - **d** saves the account and resolved model as Pi's global default. It does not switch the current session.
+- **a** turns [auto-resume](#auto-resume) on or off for all sessions.
 - **l** starts sign-out guidance for the selected account. For Codex, it prepares Pi's `/logout` command and tells you which account to choose. For Claude, it tells you to run `claude auth logout` in a terminal. It never replaces a nonempty editor draft.
 - **Add Codex account** prepares Pi's `/login` command. The extension does not add Claude logins.
 - Model scope applies to session switching. Enable excluded models in `/scoped-models`.
@@ -47,6 +49,24 @@ week 89% left · resets Sat 06:00 (in 5d 14h)
 Pi's `openai` ChatGPT plan-sharing login cannot read quota. To see bars while chatting on `openai`, also run `/login openai-codex` with the same ChatGPT account. With exactly one Codex account, it is marked active while chat uses `openai`. With more than one, no account is marked, because the `openai` token does not identify its account.
 
 The first Codex account uses `openai-codex`. Added accounts use `openai-codex-account-2` and later IDs. Claude uses the `claude-code` provider from pi-claude-code, or `claude-bridge` when only pi-claude-bridge is installed. If both are installed, /accounts shows the one the session is using, otherwise `claude-code`. Both use the single login managed by Claude Code, including `PI_CLAUDE_CODE_CONFIG_DIR` or `CLAUDE_CONFIG_DIR`. Multiple Claude logins are not supported because Claude Code uses one process-wide config directory.
+
+## Auto-resume
+
+Auto-resume is off by default. Press **a** in `/accounts` to turn it on or off. The setting is global: it is saved in `<Pi agent dir>/pi-accounts/config.json` and applies to every TUI session, including tmux subagents that load this package.
+
+When a response ends in an error, the extension takes a new quota reading for the active account. If its 5-hour or weekly limit is exhausted, the session waits for the latest exhausted window to reset, plus one to two minutes, and then sends:
+
+```text
+Continue where you left off. The usage limit has reset.
+```
+
+A notice shows the local resume time, and the footer shows it as `↻ 14:21` while the session waits.
+
+- Other errors, such as short throttles or server errors, are not resumed. Pi's own `retry` setting handles transient failures.
+- Typing a message, switching model or account, turning auto-resume off, or ending the session cancels the wait. Nothing is sent if the session is busy or a different login is active at the reset time.
+- Auto-resume never switches account or model and never spends `↻` reset credits.
+- After 3 automatic resumes in a row that hit the limit again, it stops until a response succeeds or you send a message.
+- The wait lives in the running Pi process. A restart or `/reload` drops it. Headless sessions do not auto-resume.
 
 ## Read the bars
 
@@ -82,7 +102,7 @@ The local aggregate cache and coordination files live under `<Pi agent dir>/pi-a
 - This extension never refreshes or writes Claude credentials. Run Claude Code when its login expires.
 - Account emails appear in the picker and notifications, not in the footer.
 - The picker is TUI-only. Headless sessions do not poll quota.
-- Pressing **d** writes Pi defaults. The extension never writes credentials. With Hub enabled, it writes the quota/history snapshots and aggregate cache described above.
+- Pressing **d** writes Pi defaults. Pressing **a** writes `<Pi agent dir>/pi-accounts/config.json`. The extension never writes credentials. With Hub enabled, it writes the quota/history snapshots and aggregate cache described above.
 - Codex account aliases appear in Pi's model selector. Extensions that match provider IDs, such as `pi-openai-fast`, need the added IDs in their own configuration.
 - Do not combine this package with an automatic Codex account router.
 - Pressing **l** does not edit credentials directly. Codex sign-out uses Pi's native `/logout`; Claude sign-out stays in the Claude CLI.
@@ -101,12 +121,13 @@ npm test
 
 ```text
 src/
-  index.ts      Command, session events, discovery, and refresh timers
+  index.ts      Command, session events, discovery, refresh and auto-resume timers
   accounts.ts   Account data, quota parsing, history, and scope checks
   claude.ts     Claude Code credential and identity discovery
   provider.ts   Codex account provider delegation
   quota.ts      Codex and Claude usage requests and cancellation
   monitor.ts    In-memory snapshots and shared requests
+  resume.ts     Auto-resume setting and reset scheduling
   snapshot.ts   Hub quota contract, shared quota ledger, and atomic JSON publishing
   history.ts    Incremental session index, pricing, rollups, and coordination
   status.ts     Grouped footer bars and responsive layout

@@ -109,7 +109,7 @@ export function parseUsage(value: unknown, now = Date.now()): Usage {
   return { tier: typeof value.plan_type === "string" ? cleanLabel(value.plan_type) : undefined, windows, resets };
 }
 
-function duration(ms: number): string {
+export function duration(ms: number): string {
   const minutes = Math.max(1, Math.ceil(ms / 60000));
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
@@ -117,7 +117,7 @@ function duration(ms: number): string {
   return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
 }
 
-function resetAt(reset: number, now: number): string {
+export function resetAt(reset: number, now: number): string {
   const date = new Date(reset);
   const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   return date.toDateString() === new Date(now).toDateString() ? time

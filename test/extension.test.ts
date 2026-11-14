@@ -22,6 +22,7 @@ type HarnessOptions = {
   now?: () => number;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
+  random?: () => number;
   onCustom?: (index: number, ctx: ExtensionCommandContext, setIdle: (value: boolean) => void) => void;
 };
 
@@ -49,6 +50,7 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
   const notifications: string[] = [];
   const statuses: (string | undefined)[] = [];
   const switched: Model<any>[] = [];
+  const sent: unknown[] = [];
   const handlers = new Map<string, (...args: any[]) => unknown>();
   let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
   let commandName = "";
@@ -56,6 +58,7 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
   let idle = true;
   let customCount = 0;
   let editor = "";
+  const rendered: string[] = [];
   const ctx = {
     cwd: dir, mode: options.headless ? "rpc" : "tui", isIdle: () => idle, model: { provider: providerFor(1), id: "gpt-test" }, scopedModels: [],
     modelRegistry: {
@@ -67,7 +70,10 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
     sessionManager: { getBranch: () => options.branch ?? [], getSessionDir: () => join(dir, "sessions/--test--") },
     ui: {
       theme: { fg: (_color: string, text: string) => text },
-      custom: async () => {
+      custom: async (factory: (...args: any[]) => { render(width: number): string[]; dispose?(): void }) => {
+        const component = factory({ requestRender() {} }, { fg: (_: string, text: string) => text, bold: (text: string) => text }, {}, () => {});
+        rendered.push(component.render(120).join("\n"));
+        component.dispose?.();
         const choice = choices.shift();
         options.onCustom?.(customCount++, ctx, value => { idle = value; });
         return choice;
@@ -83,16 +89,18 @@ function harness(t: TestContext, options: HarnessOptions = {}) {
     registerCommand: (name: string, config: { handler: typeof command }) => { commandName = name; command = config.handler; },
     on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler),
     setModel: async (model: Model<any>) => { switched.push(model); ctx.model = model; return true; },
-  } as unknown as ExtensionAPI, options.claude ? {
+    sendUserMessage: (content: unknown) => { sent.push(content); },
+  } as unknown as ExtensionAPI, options.claude || options.now || options.setTimeout ? {
     readClaudeAccount: options.readClaudeAccount ?? (async () => ({ kind: "claude", slot: 1, provider: CLAUDE, label: "Claude", accountId: "claude-id" })),
     readClaudeCredential: options.readClaudeCredential ?? (async () => undefined),
     now: options.now ?? Date.now,
     setTimeout: options.setTimeout ?? setTimeout,
     clearTimeout: options.clearTimeout ?? clearTimeout,
+    random: options.random,
   } : undefined);
   handlers.get("session_start")?.({}, ctx);
   return {
-    dir, auth, ctx, providers, notifications, statuses, switched, handlers, commandName,
+    dir, auth, ctx, providers, notifications, statuses, switched, sent, handlers, commandName, rendered,
     run: async (...next: (PickerChoice | undefined)[]) => { choices = next; await command("", ctx); },
     busy: () => { idle = false; },
     idle: () => { idle = true; },
@@ -420,7 +428,8 @@ test("Claude response refresh is deferred, coalesced, and cleared on shutdown", 
   assert.equal(scheduled[0].delay, 60000);
   now = 61000;
   scheduled[0].callback();
-  await new Promise(resolve => setImmediate(resolve));
+  // The refresh reads the shared ledger file before the credential, so it finishes after file I/O, not one tick.
+  for (let i = 0; i < 200 && credentialReads < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(credentialReads, 2);
   h.handlers.get("after_provider_response")?.({}, h.ctx);
   assert.equal(scheduled.length, 2);
@@ -545,4 +554,215 @@ test("history startup and agent-end timers coalesce and shutdown clears all time
   assert.ok(unrefs >= 3);
   h.handlers.get("session_shutdown")?.({}, h.ctx);
   assert.equal(pending.size, 0);
+});
+
+type Timer = { callback: () => void; delay: number; cleared: boolean };
+const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+
+// Codex account 1 is active; quota reports an exhausted 5h window resetting in one hour unless `remaining` changes.
+async function resumeHarness(t: TestContext, options: { on?: boolean; remaining?: () => number; mode?: "tui" | "rpc" } = {}) {
+  // Quota parsing stamps resets with the real clock, so the fake clock starts there.
+  let now = Date.now();
+  const timers: Timer[] = [];
+  const fakeSetTimeout = ((callback: () => void, delay?: number) => {
+    const timer: Timer = { callback, delay: delay ?? 0, cleared: false };
+    timers.push(timer);
+    return { unref() {}, timer } as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  const fakeClearTimeout = ((handle: any) => { if (handle?.timer) handle.timer.cleared = true; }) as typeof clearTimeout;
+  const h = harness(t, { now: () => now, setTimeout: fakeSetTimeout, clearTimeout: fakeClearTimeout, random: () => 0.5, headless: options.mode === "rpc" });
+  let fetches = 0;
+  let fetchedAt = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    fetches++;
+    fetchedAt = Date.now();
+    return Response.json({ rate_limit: {
+      primary_window: { limit_window_seconds: 18000, used_percent: 100 - (options.remaining?.() ?? 0), reset_after_seconds: 3600 },
+      secondary_window: { limit_window_seconds: 604800, used_percent: 40, reset_after_seconds: 86400 },
+    } });
+  });
+  h.ctx.modelRegistry.getProviderAuth = async provider => ({ auth: { apiKey: `x.${Buffer.from(JSON.stringify({
+    "https://api.openai.com/auth": { chatgpt_account_id: provider === providerFor(1) ? "1" : "2" },
+  })).toString("base64url")}.x` } });
+  if (options.on) {
+    mkdirSync(join(h.dir, "pi-accounts"));
+    writeFileSync(join(h.dir, "pi-accounts/config.json"), JSON.stringify({ autoResume: true }));
+  }
+  await h.handlers.get("session_start")?.({}, h.ctx);
+  await settle();
+  await h.handlers.get("agent_start")?.({}, h.ctx);
+  const fail = async () => {
+    await h.handlers.get("agent_start")?.({}, h.ctx);
+    now += 1000;
+    await h.handlers.get("agent_before_settle")?.({ type: "agent_before_settle", outcome: "error", entries: [], continue: false }, h.ctx);
+    now += 1000;
+    await h.handlers.get("agent_settled")?.({ type: "agent_settled" }, h.ctx);
+    await settle();
+  };
+  const succeed = async () => {
+    assert.equal(await h.handlers.get("agent_before_settle")?.({ type: "agent_before_settle", outcome: "completed", entries: [], continue: false }, h.ctx), undefined);
+    await h.handlers.get("agent_settled")?.({ type: "agent_settled" }, h.ctx);
+  };
+  const armed = () => timers.filter(timer => !timer.cleared);
+  const fire = async () => { const timer = armed().at(-1)!; timer.cleared = true; now += timer.delay; timer.callback(); await settle(); };
+  return { ...h, timers, armed, fail, succeed, fire, fetches: () => fetches, fetchedAt: () => fetchedAt, setNow: (value: number) => { now = value; }, now: () => now };
+}
+
+test("auto-resume is off by default: a usage-limit error arms nothing", async t => {
+  const h = await resumeHarness(t);
+  await h.fail();
+  assert.equal(h.armed().length, 0);
+  assert.equal(h.sent.length, 0);
+  assert.ok(!h.notifications.some(text => /Auto-resume/.test(text)));
+});
+
+test("an exhausted window arms one resume after the reset, shows it, and sends the continue message once", async t => {
+  const h = await resumeHarness(t, { on: true });
+  const fetchesBefore = h.fetches();
+  await h.fail();
+  assert.equal(h.fetches(), fetchesBefore + 1, "a reading taken after the failure is requested");
+  assert.equal(h.armed().length, 1);
+  // Reset one hour after the real-clock reading, plus a 60 s buffer and half of the 60 s jitter.
+  const reset = h.fetchedAt() + 3600000;
+  assert.ok(Math.abs(h.now() + h.armed()[0].delay - (reset + 60000 + 30000)) < 1000);
+  assert.match(h.notifications.at(-1)!, /^Usage limit reached\. Auto-resume at \d\d:\d\d \(in 1h 2m\)\.$/);
+  assert.match(h.statuses.at(-1)!, /│  ↻ \d\d:\d\d$/);
+  await h.fire();
+  assert.deepEqual(h.sent, ["Continue where you left off. The usage limit has reset."]);
+  assert.doesNotMatch(h.statuses.at(-1)!, /↻ \d/);
+  assert.equal(h.switched.length, 0, "auto-resume never switches account or model");
+});
+
+test("errors without an exhausted window, aborted runs, completed runs and headless sessions never arm", async t => {
+  const left = await resumeHarness(t, { on: true, remaining: () => 30 });
+  await left.fail();
+  assert.equal(left.armed().length, 0);
+
+  const h = await resumeHarness(t, { on: true });
+  await h.succeed();
+  // Abort can occur after our boundary handler ran, for example while a later extension awaits.
+  await h.handlers.get("agent_before_settle")?.({ outcome: "error" }, h.ctx);
+  await h.handlers.get("agent_settled")?.({ type: "agent_settled", aborted: true }, h.ctx);
+  await settle();
+  assert.equal(h.armed().length, 0);
+
+  const rpc = await resumeHarness(t, { on: true, mode: "rpc" });
+  await rpc.fail();
+  assert.equal(rpc.armed().length, 0);
+});
+
+test("user input, model changes, shutdown and turning auto-resume off cancel a pending resume", async t => {
+  const h = await resumeHarness(t, { on: true });
+  await h.fail();
+  await h.handlers.get("input")?.({ type: "input", text: "hi", source: "extension" }, h.ctx);
+  assert.equal(h.armed().length, 1, "the extension's own message does not cancel");
+  await h.handlers.get("input")?.({ type: "input", text: "hi", source: "interactive" }, h.ctx);
+  assert.equal(h.armed().length, 0);
+  assert.doesNotMatch(h.statuses.at(-1)!, /↻ \d/);
+
+  await h.fail();
+  await h.handlers.get("model_select")?.({}, h.ctx);
+  assert.equal(h.armed().length, 0);
+
+  await h.fail();
+  await h.handlers.get("session_shutdown")?.({}, h.ctx);
+  assert.equal(h.armed().length, 0);
+  await h.handlers.get("session_start")?.({}, h.ctx);
+  await settle();
+
+  await h.fail();
+  const timer = h.armed()[0];
+  timer.cleared = true;
+  writeFileSync(join(h.dir, "pi-accounts/config.json"), JSON.stringify({ autoResume: false }));
+  timer.callback();
+  await settle();
+  assert.equal(h.sent.length, 0, "turning auto-resume off before the reset sends nothing");
+});
+
+test("a cancel during detection cannot re-arm, and a busy session or changed login at fire time sends nothing", async t => {
+  const h = await resumeHarness(t, { on: true });
+  await h.handlers.get("agent_before_settle")?.({ type: "agent_before_settle", outcome: "error", entries: [], continue: false }, h.ctx);
+  const settling = h.handlers.get("agent_settled")?.({ type: "agent_settled" }, h.ctx);
+  h.handlers.get("model_select")?.({}, h.ctx);
+  await settling;
+  await settle();
+  assert.equal(h.armed().length, 0);
+
+  await h.fail();
+  h.busy();
+  await h.fire();
+  assert.equal(h.sent.length, 0);
+  h.idle();
+
+  await h.fail();
+  const auth = JSON.parse(readFileSync(join(h.dir, "auth.json"), "utf8"));
+  auth[providerFor(1)].accountId = "replaced";
+  writeFileSync(join(h.dir, "auth.json"), JSON.stringify(auth));
+  await h.fire();
+  assert.equal(h.sent.length, 0, "a different login in the same slot is not resumed");
+});
+
+test("an account switch while a request is running cannot assign its error to the new account", async t => {
+  const h = await resumeHarness(t, { on: true });
+  await h.handlers.get("agent_start")?.({}, h.ctx);
+  h.ctx.model = { ...h.ctx.model!, provider: providerFor(2) };
+  await h.handlers.get("model_select")?.({}, h.ctx);
+  await h.handlers.get("agent_before_settle")?.({ outcome: "error" }, h.ctx);
+  await h.handlers.get("agent_settled")?.({ aborted: false }, h.ctx);
+  assert.equal(h.armed().length, 0);
+  assert.equal(h.sent.length, 0);
+  // A later request really made on account 2 may resume that account.
+  await h.fail();
+  assert.equal(h.armed().length, 1);
+});
+
+test("cancellation between the boundary and settlement cannot resume a newly selected account", async t => {
+  const h = await resumeHarness(t, { on: true });
+  for (const source of ["model", "input", "start"]) {
+    await h.handlers.get("agent_before_settle")?.({ outcome: "error" }, h.ctx);
+    if (source === "model") {
+      h.ctx.model = { ...h.ctx.model!, provider: providerFor(2) };
+      await h.handlers.get("model_select")?.({}, h.ctx);
+    } else if (source === "input") {
+      await h.handlers.get("input")?.({ source: "interactive", text: "stop" }, h.ctx);
+    } else {
+      await h.handlers.get("agent_start")?.({}, h.ctx);
+    }
+    await h.handlers.get("agent_settled")?.({ aborted: false }, h.ctx);
+    assert.equal(h.armed().length, 0);
+  }
+});
+
+test("a reading cached before the failure that shows quota left does not hide the exhausted limit", async t => {
+  let remaining = 30;
+  const h = await resumeHarness(t, { on: true, remaining: () => remaining });
+  assert.match(h.statuses.at(-1)!, /●1~? ▰▰▱▱▱/);
+  remaining = 0;
+  await h.fail();
+  assert.equal(h.armed().length, 1);
+});
+
+test("three consecutive resumes that fail again stop with a notice; a successful run resets the count", async t => {
+  const h = await resumeHarness(t, { on: true });
+  for (let i = 0; i < 3; i++) { await h.fail(); await h.fire(); }
+  assert.equal(h.sent.length, 3);
+  await h.fail();
+  assert.equal(h.armed().length, 0);
+  assert.equal(h.notifications.at(-1), "Auto-resume stopped after 3 attempts.");
+  await h.fail();
+  assert.equal(h.notifications.filter(text => /stopped after/.test(text)).length, 1);
+  await h.succeed();
+  await h.fail();
+  assert.equal(h.armed().length, 1);
+});
+
+test("a in /accounts saves the global auto-resume switch and reopens the picker with the new state", async t => {
+  const h = harness(t);
+  await h.run({ toggleAutoResume: true }, { toggleAutoResume: true }, undefined);
+  assert.match(h.rendered[0], /Auto-resume: off/);
+  assert.match(h.rendered[1], /Auto-resume: on/);
+  assert.match(h.rendered[2], /Auto-resume: off/);
+  assert.deepEqual(h.notifications.slice(-2), ["Auto-resume on for all sessions.", "Auto-resume off for all sessions."]);
+  assert.deepEqual(JSON.parse(readFileSync(join(h.dir, "pi-accounts/config.json"), "utf8")), { autoResume: false });
+  assert.equal(h.switched.length, 0);
 });
